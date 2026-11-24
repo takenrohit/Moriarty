@@ -11,15 +11,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.investigator.config.JacksonConfig;
 import dev.investigator.domain.Incident;
 import dev.investigator.domain.IncidentStatus;
+import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.domain.Severity;
 import dev.investigator.store.IncidentRepository;
+import dev.investigator.store.InvestigationRepository;
 import dev.investigator.testsupport.InvestigatorSpringBootTest;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.IntStream;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -55,6 +60,24 @@ class AlertControllerTest {
     @Autowired
     private IncidentRepository incidents;
 
+    @Autowired
+    private InvestigationRepository investigations;
+
+    /**
+     * Each accepted alert starts an investigation that calls the shared Scripted_Chat_Model in the
+     * background. Waiting for them keeps those calls out of later tests' scripts and recorded requests.
+     */
+    @AfterEach
+    void awaitStartedInvestigations() throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (System.nanoTime() < deadline && incidents.findAllNewestFirst().stream()
+                .map(i -> investigations.find(i.id()))
+                .flatMap(Optional::stream)
+                .anyMatch(i -> i.status() == InvestigationStatus.PENDING || i.status() == InvestigationStatus.RUNNING)) {
+            Thread.sleep(10);
+        }
+    }
+
     @Test
     void demoAlertIsAcceptedWithIncidentIdStatusAndReportUrl() throws Exception {
         postAlert(DEMO_ALERT)
@@ -88,7 +111,10 @@ class AlertControllerTest {
         assertThat(incident.title()).isEqualTo("HighErrorRate on checkout-api");
         assertThat(incident.severity()).isEqualTo(Severity.CRITICAL);
         assertThat(incident.detectedAt()).isEqualTo(Instant.parse("2026-11-23T14:40:00Z"));
-        assertThat(incident.status()).isEqualTo(IncidentStatus.OPEN);
+        // Normalization stores OPEN (AlertNormalizerTest); the investigation started by intake then moves
+        // the Incident to INVESTIGATING and REPORTED (Req 6.5, 6.6), possibly before this line runs.
+        assertThat(incident.status())
+                .isIn(IncidentStatus.OPEN, IncidentStatus.INVESTIGATING, IncidentStatus.REPORTED);
         assertThat(incident.fingerprint()).matches("[0-9a-f]{64}");
     }
 
