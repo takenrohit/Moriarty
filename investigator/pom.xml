@@ -19,7 +19,6 @@
     <properties>
         <java.version>21</java.version>
         <langchain4j.version>1.24.0</langchain4j.version>
-        <jqwik.version>1.10.2</jqwik.version>
         <!-- 1.5.x targets Jackson 2 (Spring Boot 3.5); 3.x requires Jackson 3. -->
         <json-schema-validator.version>1.5.9</json-schema-validator.version>
     </properties>
@@ -78,12 +77,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>net.jqwik</groupId>
-            <artifactId>jqwik</artifactId>
-            <version>${jqwik.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
