@@ -1,0 +1,130 @@
+package dev.investigator.api;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ReadListener;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletInputStream;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+/**
+ * Rejects alert bodies larger than 64 KB with 413 before they are parsed (Req 4.9).
+ *
+ * <p>A declared {@code Content-Length} over the limit is rejected without reading the body. Otherwise
+ * (no length, for example chunked transfer) the body is read up to the limit plus one byte; a body
+ * that exceeds the limit is rejected, and a body within it is replayed to the rest of the chain.
+ */
+@Component
+public class RequestSizeLimitFilter extends OncePerRequestFilter {
+
+    /** Maximum accepted body size in bytes (64 KB). */
+    public static final int MAX_BODY_BYTES = 64 * 1024;
+
+    static final String ALERTS_PATH = "/api/v1/alerts";
+    static final String TOO_LARGE_MESSAGE = "request body exceeds " + MAX_BODY_BYTES + " bytes";
+
+    private final ObjectMapper objectMapper;
+
+    public RequestSizeLimitFilter(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI().substring(request.getContextPath().length());
+        return !ALERTS_PATH.equals(path);
+    }
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+            throws ServletException, IOException {
+        if (request.getContentLengthLong() > MAX_BODY_BYTES) {
+            reject(response);
+            return;
+        }
+        byte[] body = request.getInputStream().readNBytes(MAX_BODY_BYTES + 1);
+        if (body.length > MAX_BODY_BYTES) {
+            reject(response);
+            return;
+        }
+        chain.doFilter(new CachedBodyRequest(request, body), response);
+    }
+
+    private void reject(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpStatus.PAYLOAD_TOO_LARGE.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        objectMapper.writeValue(response.getOutputStream(), ApiErrorResponse.of(TOO_LARGE_MESSAGE));
+    }
+
+    /** Request wrapper that serves an already-read body. */
+    private static final class CachedBodyRequest extends HttpServletRequestWrapper {
+
+        private final byte[] body;
+
+        CachedBodyRequest(HttpServletRequest request, byte[] body) {
+            super(request);
+            this.body = body;
+        }
+
+        @Override
+        public ServletInputStream getInputStream() {
+            ByteArrayInputStream in = new ByteArrayInputStream(body);
+            return new ServletInputStream() {
+                @Override
+                public int read() {
+                    return in.read();
+                }
+
+                @Override
+                public int read(byte[] b, int off, int len) {
+                    return in.read(b, off, len);
+                }
+
+                @Override
+                public boolean isFinished() {
+                    return in.available() == 0;
+                }
+
+                @Override
+                public boolean isReady() {
+                    return true;
+                }
+
+                @Override
+                public void setReadListener(ReadListener listener) {
+                    throw new UnsupportedOperationException("asynchronous reads are not supported");
+                }
+            };
+        }
+
+        @Override
+        public BufferedReader getReader() {
+            String encoding = getCharacterEncoding();
+            Charset charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
+            return new BufferedReader(new InputStreamReader(new ByteArrayInputStream(body), charset));
+        }
+
+        @Override
+        public int getContentLength() {
+            return body.length;
+        }
+
+        @Override
+        public long getContentLengthLong() {
+            return body.length;
+        }
+    }
+}
