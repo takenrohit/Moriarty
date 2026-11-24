@@ -1,6 +1,8 @@
 spring:
   application:
     name: investigator
+  profiles:
+    default: mock             # mock integrations unless SPRING_PROFILES_ACTIVE names another profile
   threads:
     virtual:
       enabled: true
@@ -45,6 +47,8 @@ investigator:
       dependencies: [payment-provider]
     payment-provider:
       dependencies: []
+  mock:
+    default-anchor: 2026-11-23T14:40:00Z   # Scenario_Anchor when no investigation scope is bound
   llm:
     enabled: true
     base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
