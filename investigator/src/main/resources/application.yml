@@ -1,5 +1,55 @@
 spring:
   application:
     name: investigator
+  threads:
+    virtual:
+      enabled: true
   flyway:
-    enabled: false
+    enabled: false            # Flyway on classpath, inactive in Phase 1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+investigator:
+  display-timezone: ${INVESTIGATOR_DISPLAY_TIMEZONE:Asia/Kolkata}
+  window:
+    look-back: 60m
+    look-ahead: 10m
+    max-span: 6h
+  budget:
+    max-tool-calls: 15
+    timeout: 3m
+  tools:
+    max-query-length: 1000
+    max-symptom-length: 200
+    max-lookback-hours: 24
+    max-span: 6h
+    max-result-bytes: 4096
+    max-metric-points: 300
+    min-metric-step: 15s
+    log-fetch-limit: 500
+    log-top-messages: 5
+    trace-limit: 50
+    trace-examples: 3
+    slow-trace-threshold: 2s
+    max-changed-files: 20
+  agent:
+    memory-max-messages: 64
+  services:
+    checkout-api:
+      dependencies: [payment-gateway]
+    payment-gateway:
+      dependencies: [payment-provider]
+    payment-provider:
+      dependencies: []
+  llm:
+    enabled: true
+    base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
+    api-key: ${LLM_API_KEY:}
+    model: ${LLM_MODEL:gpt-4o-mini}
+    json-mode: ${LLM_JSON_MODE:true}
+    temperature: 0.0
+    request-timeout: 60s

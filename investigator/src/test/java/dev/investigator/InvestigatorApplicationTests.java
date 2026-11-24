@@ -1,13 +1,13 @@
 package dev.investigator;
 
+import dev.investigator.testsupport.InvestigatorSpringBootTest;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
 /**
  * Checks that the application context starts with the default configuration,
  * which needs no PostgreSQL, no Redis and no LLM credentials.
  */
-@SpringBootTest
+@InvestigatorSpringBootTest
 class InvestigatorApplicationTests {
 
     @Test
