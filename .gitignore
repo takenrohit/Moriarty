@@ -1,0 +1,15 @@
+# Build output
+target/
+
+# Local environment files (secrets); keep the template
+.env
+*.env
+!.env.example
+
+# IDE metadata
+.idea/
+*.iml
+.vscode/
+
+# OS files
+.DS_Store
