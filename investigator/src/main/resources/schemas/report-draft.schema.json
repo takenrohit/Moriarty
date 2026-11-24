@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReportDraft",
+  "description": "Incident report drafted by the Investigator_Agent. Every claim cites evidence IDs returned by tools.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["incidentId", "summary", "timeline", "hypotheses", "actions", "openQuestions"],
+  "properties": {
+    "incidentId": {
+      "type": "string",
+      "description": "The id of the incident under investigation."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "timeline": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "description", "evidenceIds"],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 instant, for example 2026-11-23T14:38:00Z."
+          },
+          "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "evidenceIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "hypotheses": {
+      "type": "array",
+      "maxItems": 5,
+      "description": "Ordered from most likely to least likely.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["statement", "confidence", "supportingEvidenceIds", "contradictingEvidenceIds", "establishedCause"],
+        "properties": {
+          "statement": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "confidence": { "enum": ["LOW", "MEDIUM", "HIGH"] },
+          "supportingEvidenceIds": { "type": "array", "items": { "type": "string" } },
+          "contradictingEvidenceIds": { "type": "array", "items": { "type": "string" } },
+          "establishedCause": {
+            "type": "boolean",
+            "description": "True only when evidence links the mechanism to the failure."
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["order", "type", "description", "requiresApproval", "evidenceIds"],
+        "properties": {
+          "order": { "type": "integer", "minimum": 1 },
+          "type": { "enum": ["INVESTIGATE", "ROLLBACK", "RESTART", "TRAFFIC_SHIFT", "CONFIG_CHANGE", "ESCALATE"] },
+          "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "requiresApproval": { "type": "boolean" },
+          "evidenceIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "openQuestions": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "maxLength": 500 }
+    }
+  }
+}

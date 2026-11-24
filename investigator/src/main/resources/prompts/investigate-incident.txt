@@ -1,0 +1,11 @@
+Investigate the incident below and draft the incident report.
+
+Incident (JSON):
+{{incident}}
+
+Investigation window (UTC): from {{windowStart}} to {{windowEnd}}. Query only times inside this window.
+
+ALERT evidence ID: {{alertEvidenceId}}. Cite this ID for the alert.
+
+When you have finished, return only a JSON document that validates against this JSON Schema:
+{{reportSchema}}
