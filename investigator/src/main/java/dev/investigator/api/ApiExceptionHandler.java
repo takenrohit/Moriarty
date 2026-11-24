@@ -2,6 +2,7 @@ package dev.investigator.api;
 
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
+import dev.investigator.alert.AlertValidationException;
 import java.util.Comparator;
 import java.util.List;
 import org.springframework.http.HttpStatus;
@@ -17,6 +18,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *
  * <ul>
  *   <li>Bean-validation errors: 400 with one entry per field error (Req 4.5, 4.8).
+ *   <li>{@link AlertValidationException} from the AlertNormalizer (bad severity or {@code detectedAt}):
+ *       400 with one entry per rejected field (Req 4.6, 4.7).
  *   <li>Unreadable body (malformed JSON, missing body, wrong JSON type): 400 with a generic message.
  *       The request body and the parser message are never echoed or logged.
  *   <li>{@link IncidentNotFoundException}: 404 (Req 6.8).
@@ -38,6 +41,15 @@ public class ApiExceptionHandler {
                 .map(error -> new ApiErrorResponse.FieldMessage(
                         error instanceof FieldError fieldError ? fieldError.getField() : null,
                         error.getDefaultMessage()))
+                .sorted(ERROR_ORDER)
+                .toList();
+        return ResponseEntity.badRequest().body(new ApiErrorResponse(errors));
+    }
+
+    @ExceptionHandler(AlertValidationException.class)
+    ResponseEntity<ApiErrorResponse> invalidAlert(AlertValidationException ex) {
+        List<ApiErrorResponse.FieldMessage> errors = ex.violations().stream()
+                .map(violation -> new ApiErrorResponse.FieldMessage(violation.field(), violation.message()))
                 .sorted(ERROR_ORDER)
                 .toList();
         return ResponseEntity.badRequest().body(new ApiErrorResponse(errors));
