@@ -3,33 +3,38 @@ package dev.investigator.alert;
 import dev.investigator.api.AlertAcceptedResponse;
 import dev.investigator.api.MockAlertRequest;
 import dev.investigator.domain.Incident;
-import dev.investigator.domain.InvestigationStatus;
+import dev.investigator.domain.Investigation;
+import dev.investigator.investigation.InvestigationOrchestrator;
 import dev.investigator.store.IncidentRepository;
 import org.springframework.stereotype.Service;
 
 /**
- * Accepts a validated Mock_Alert, normalizes it into an Incident, stores it, and answers with the new
- * Incident_ID (Req 4.2, 5.1).
+ * Accepts a validated Mock_Alert, normalizes it into an Incident, stores it, hands it to the
+ * Investigation_Orchestrator and answers with the new Incident_ID (Req 4.2, 4.4, 5.1).
  *
  * <p>An alert the {@link AlertNormalizer} rejects throws {@link AlertValidationException} before
- * anything is stored (Req 4.5 to 4.7). Task 12.1 hands the stored Incident to the
- * Investigation_Orchestrator before responding (Req 4.4).
+ * anything is stored (Req 4.5 to 4.7). {@link InvestigationOrchestrator#start} creates the
+ * {@code PENDING} Investigation and returns without waiting for the agent (Req 4.3).
  */
 @Service
 public class AlertIntakeService {
 
     private final AlertNormalizer normalizer;
     private final IncidentRepository incidents;
+    private final InvestigationOrchestrator orchestrator;
 
-    public AlertIntakeService(AlertNormalizer normalizer, IncidentRepository incidents) {
+    public AlertIntakeService(AlertNormalizer normalizer, IncidentRepository incidents,
+            InvestigationOrchestrator orchestrator) {
         this.normalizer = normalizer;
         this.incidents = incidents;
+        this.orchestrator = orchestrator;
     }
 
     public AlertAcceptedResponse accept(MockAlertRequest request) {
         Incident incident = normalizer.normalize(request);
         incidents.save(incident);
-        return new AlertAcceptedResponse(incident.id(), InvestigationStatus.PENDING, reportUrl(incident.id()));
+        Investigation investigation = orchestrator.start(incident);
+        return new AlertAcceptedResponse(incident.id(), investigation.status(), reportUrl(incident.id()));
     }
 
     /** Relative URL of the report endpoint for {@code incidentId}. */
