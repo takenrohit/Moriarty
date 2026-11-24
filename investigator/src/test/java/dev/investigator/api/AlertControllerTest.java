@@ -9,8 +9,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.investigator.config.JacksonConfig;
+import dev.investigator.domain.Incident;
+import dev.investigator.domain.IncidentStatus;
+import dev.investigator.domain.Severity;
+import dev.investigator.store.IncidentRepository;
 import dev.investigator.testsupport.InvestigatorSpringBootTest;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +30,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
-/** Example tests for {@code POST /api/v1/alerts} (Req 4.1, 4.2, 4.5, 4.8, 4.9, 4.10). */
+/** Example tests for {@code POST /api/v1/alerts} (Req 4.1, 4.2, 4.5 to 4.10, 5.1, 5.2, 5.4). */
 @InvestigatorSpringBootTest
 @AutoConfigureMockMvc
 class AlertControllerTest {
@@ -47,6 +52,9 @@ class AlertControllerTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private IncidentRepository incidents;
+
     @Test
     void demoAlertIsAcceptedWithIncidentIdStatusAndReportUrl() throws Exception {
         postAlert(DEMO_ALERT)
@@ -67,6 +75,39 @@ class AlertControllerTest {
         postAlert(json(Map.of("service", " ", "severity", "critical")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors[*].field", contains("alert", "detectedAt", "service")));
+    }
+
+    @Test
+    void acceptedAlertIsStoredAsOpenIncident() throws Exception {
+        String response = postAlert(DEMO_ALERT.replace("2026-11-23T14:40:00Z", "2026-11-23T20:10:00+05:30"))
+                .andExpect(status().isAccepted())
+                .andReturn().getResponse().getContentAsString();
+        String incidentId = objectMapper.readTree(response).get("incidentId").asText();
+
+        Incident incident = incidents.find(incidentId).orElseThrow();
+        assertThat(incident.title()).isEqualTo("HighErrorRate on checkout-api");
+        assertThat(incident.severity()).isEqualTo(Severity.CRITICAL);
+        assertThat(incident.detectedAt()).isEqualTo(Instant.parse("2026-11-23T14:40:00Z"));
+        assertThat(incident.status()).isEqualTo(IncidentStatus.OPEN);
+        assertThat(incident.fingerprint()).matches("[0-9a-f]{64}");
+    }
+
+    @Test
+    void unknownSeverityAndTimestampWithoutOffsetAreRejectedAndNotStored() throws Exception {
+        int before = incidents.findAllNewestFirst().size();
+        Map<String, Object> alert = alertWith("severity", "urgent");
+        alert.put("detectedAt", "2026-11-23T14:40:00");
+        String response = postAlert(json(alert))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[*].field", contains("detectedAt", "severity")))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(response).doesNotContain("urgent");
+        assertThat(incidents.findAllNewestFirst()).hasSize(before);
+    }
+
+    @Test
+    void severityIsCaseInsensitive() throws Exception {
+        postAlert(json(alertWith("severity", "WaRnInG"))).andExpect(status().isAccepted());
     }
 
     @Test
