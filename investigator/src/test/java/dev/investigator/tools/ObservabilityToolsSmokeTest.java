@@ -166,8 +166,21 @@ class ObservabilityToolsSmokeTest {
     }
 
     @Test
-    void findRunbookWithoutCatalogEntryReturnsNotFound() throws Exception {
+    void findRunbookStoresRunbookEvidenceWithSteps() throws Exception {
         JsonNode json = mapper.readTree(tools.findRunbook(incidentId, "payment-gateway", "timeouts"));
+
+        assertThat(json.get("title").asText()).isEqualTo("Payment gateway degradation");
+        assertThat(json.get("service").asText()).isEqualTo("payment-gateway");
+        assertThat(json.get("steps").size()).isBetween(1, 10);
+        Evidence ev = only();
+        assertThat(json.get("evidenceId").asText()).isEqualTo(ev.id());
+        assertThat(ev.type()).isEqualTo(EvidenceType.RUNBOOK);
+        assertThat(ev.citation()).isEqualTo("runbooks/payment-gateway-degradation.md");
+    }
+
+    @Test
+    void findRunbookWithoutMatchReturnsNotFound() throws Exception {
+        JsonNode json = mapper.readTree(tools.findRunbook(incidentId, "payment-provider", "disk full"));
 
         assertThat(json.get("found").asBoolean()).isFalse();
         assertThat(repository.findByIncident(incidentId)).isEmpty();

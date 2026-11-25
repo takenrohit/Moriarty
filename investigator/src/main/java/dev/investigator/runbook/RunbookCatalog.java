@@ -5,8 +5,7 @@ import java.util.Optional;
 /**
  * Finds the runbook that best matches a service and symptom for {@code findRunbook} (Req 10.7, 12.6).
  *
- * <p>{@link EmptyRunbookCatalog} is the Phase 1 placeholder; task 16.1 replaces it with the
- * Markdown-backed {@code RunbookService}.
+ * <p>{@link RunbookService} is the Markdown-backed implementation.
  */
 public interface RunbookCatalog {
 
