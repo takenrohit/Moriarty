@@ -1,0 +1,16 @@
+# Phase 1: the investigator only; mock integrations run in-process (CP-5).
+# Start: docker compose -f deploy/docker-compose.yml up --build
+services:
+  investigator:
+    build:
+      context: ../investigator
+    ports:
+      - "8080:8080"
+    env_file:
+      # LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, ... (copy ../investigator/.env.example to .env).
+      # required: false keeps "docker compose config" working without the file;
+      # the investigator then fails startup with "LLM_API_KEY is not set".
+      - path: ../investigator/.env
+        required: false
+    environment:
+      SPRING_PROFILES_ACTIVE: mock
