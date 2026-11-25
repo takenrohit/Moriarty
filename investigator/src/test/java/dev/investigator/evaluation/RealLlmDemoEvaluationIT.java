@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.investigator.domain.Evidence;
 import dev.investigator.domain.InvestigationReport;
+import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.store.EvidenceRepository;
 import dev.investigator.testsupport.DemoScenarioScript;
 import dev.investigator.testsupport.ScenarioEvaluator;
@@ -16,6 +17,8 @@ import dev.investigator.testsupport.ScriptedChatModel;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.RepeatedTest;
@@ -40,6 +43,9 @@ import org.springframework.test.web.servlet.MvcResult;
  * unless {@code LLM_API_KEY} is set; the condition is evaluated before the Spring context starts,
  * because {@code LlmConfig} fails startup without a key. The context uses the production Chat_Model,
  * not {@code TestLlmConfig}'s scripted one.
+ *
+ * <p>A run whose investigation failed on a provider 429 or 5xx is repeated (up to {@value #MAX_ATTEMPTS}
+ * attempts) instead of being scored, because that failure says nothing about the model's analysis.
  */
 @Tag("llm")
 @EnabledIfEnvironmentVariable(named = "LLM_API_KEY", matches = ".*\\S.*",
@@ -53,6 +59,12 @@ class RealLlmDemoEvaluationIT {
     /** Req 14.13, 22.3. */
     private static final Duration REPORT_LIMIT = Duration.ofMinutes(3);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+    /** Attempts per run when the provider answers 429 or 5xx (LangChain4j exception names). */
+    private static final int MAX_ATTEMPTS = 3;
+    private static final Duration TRANSIENT_PAUSE = Duration.ofSeconds(65);
+    private static final List<String> TRANSIENT_ERRORS = List.of("RateLimitException", "InternalServerException");
+    /** Each report's Markdown is written here (git-ignored build output) for inspection. */
+    private static final Path OUTPUT_DIR = Path.of("target", "llm-eval");
 
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
@@ -65,6 +77,31 @@ class RealLlmDemoEvaluationIT {
         assertThat(context.getBeanNamesForType(ScriptedChatModel.class)).as("scripted Chat_Model beans").isEmpty();
         assertThat(chatModel).isInstanceOf(OpenAiChatModel.class);
 
+        int run = repetition.getCurrentRepetition();
+        Run result = investigate(run, 1);
+        // A provider rate limit or overload (429/5xx) says nothing about the model's analysis, so the run
+        // is repeated after a pause instead of being scored; each attempt still gets the full 3 minutes.
+        for (int attempt = 2; attempt <= MAX_ATTEMPTS && result.providerTransientFailure(); attempt++) {
+            log.warn("Real-LLM demo run {}: provider transient failure ({}); retrying in {} s",
+                    run, result.report().summary(), TRANSIENT_PAUSE.toSeconds());
+            Thread.sleep(TRANSIENT_PAUSE.toMillis());
+            result = investigate(run, attempt);
+        }
+        assertThat(result.duration()).as("time until the report is available").isLessThanOrEqualTo(REPORT_LIMIT);
+
+        InvestigationReport report = result.report();
+        String markdown = result.markdown();
+        List<String> stored = evidence.findByIncident(result.incidentId()).stream().map(Evidence::id).toList();
+
+        List<FailedCheck> failed = new ScenarioEvaluator().evaluate(report, stored, markdown);
+        assertThat(failed)
+                .as("failed Scenario_Evaluator checks in run %d (status %s, summary: %s); Markdown:%n%s",
+                        run, report.status(), report.summary(), markdown)
+                .isEmpty();
+    }
+
+    /** Posts the demo alert, waits for the report and saves its Markdown under {@link #OUTPUT_DIR}. */
+    private Run investigate(int run, int attempt) throws Exception {
         long posted = System.nanoTime();
         String accepted = mvc.perform(post("/api/v1/alerts").contentType(MediaType.APPLICATION_JSON)
                         .content(DemoScenarioScript.DEMO_ALERT.getBytes(StandardCharsets.UTF_8)))
@@ -74,22 +111,25 @@ class RealLlmDemoEvaluationIT {
 
         String json = awaitJsonReport(incidentId, posted);
         Duration duration = Duration.ofNanos(System.nanoTime() - posted);
-        log.info("Real-LLM demo run {}/{}: incident {} report available after {} ms",
-                repetition.getCurrentRepetition(), repetition.getTotalRepetitions(), incidentId,
-                duration.toMillis());
-        assertThat(duration).as("time until the report is available").isLessThanOrEqualTo(REPORT_LIMIT);
-
         InvestigationReport report = mapper.readValue(json, InvestigationReport.class);
         String markdown = mvc.perform(get("/api/v1/incidents/{id}/report.md", incidentId))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
-        List<String> stored = evidence.findByIncident(incidentId).stream().map(Evidence::id).toList();
+        log.info("Real-LLM demo run {} attempt {}: incident {} status {} report available after {} ms",
+                run, attempt, incidentId, report.status(), duration.toMillis());
+        Files.createDirectories(OUTPUT_DIR);
+        Files.writeString(OUTPUT_DIR.resolve("run-" + run + "-attempt-" + attempt + ".md"), markdown,
+                StandardCharsets.UTF_8);
+        return new Run(incidentId, duration, report, markdown);
+    }
 
-        List<FailedCheck> failed = new ScenarioEvaluator().evaluate(report, stored, markdown);
-        assertThat(failed)
-                .as("failed Scenario_Evaluator checks in run %d (status %s, summary: %s); Markdown:%n%s",
-                        repetition.getCurrentRepetition(), report.status(), report.summary(), markdown)
-                .isEmpty();
+    private record Run(String incidentId, Duration duration, InvestigationReport report, String markdown) {
+
+        /** True when the investigation failed on an HTTP 429 or 5xx from the LLM provider. */
+        boolean providerTransientFailure() {
+            return report.status() == InvestigationStatus.FAILED && report.summary() != null
+                    && TRANSIENT_ERRORS.stream().anyMatch(report.summary()::contains);
+        }
     }
 
     /** Polls the JSON report until it is stored; fails after {@link #REPORT_LIMIT} from {@code posted}. */

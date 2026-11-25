@@ -62,3 +62,4 @@ investigator:
     json-mode: ${LLM_JSON_MODE:true}
     temperature: 0.0
     request-timeout: 60s
+    max-retries: ${LLM_MAX_RETRIES:2}   # raise (e.g. 10) for rate-limited free tiers

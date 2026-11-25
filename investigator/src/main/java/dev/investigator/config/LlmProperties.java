@@ -2,6 +2,8 @@ package dev.investigator.config;
 
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import java.time.Duration;
@@ -24,6 +26,8 @@ import org.springframework.validation.annotation.Validated;
  * @param jsonMode request a JSON object response format
  * @param temperature sampling temperature
  * @param requestTimeout timeout for one LLM HTTP request
+ * @param maxRetries retries for one LLM HTTP request on retriable errors such as 429 or 5xx; LangChain4j
+ *     waits 0.5 s × 1.5^n before retry n, so 10 retries cover about one minute of rate limiting
  */
 @Validated
 @ConfigurationProperties("investigator.llm")
@@ -34,7 +38,8 @@ public record LlmProperties(
         @NotBlank @DefaultValue("gpt-4o-mini") String model,
         @DefaultValue("true") boolean jsonMode,
         @NotNull @DecimalMin("0.0") @DecimalMax("2.0") @DefaultValue("0.0") Double temperature,
-        @NotNull @DurationMin(seconds = 1) @DefaultValue("60s") Duration requestTimeout) {
+        @NotNull @DurationMin(seconds = 1) @DefaultValue("60s") Duration requestTimeout,
+        @Min(0) @Max(20) @DefaultValue("2") int maxRetries) {
 
     static final String MASK = "****";
 
@@ -49,6 +54,7 @@ public record LlmProperties(
                 + ", jsonMode=" + jsonMode
                 + ", temperature=" + temperature
                 + ", requestTimeout=" + requestTimeout
+                + ", maxRetries=" + maxRetries
                 + "]";
     }
 }

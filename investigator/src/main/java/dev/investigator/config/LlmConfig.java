@@ -32,7 +32,8 @@ public class LlmConfig {
                 .apiKey(llm.apiKey())
                 .modelName(llm.model())
                 .temperature(llm.temperature())
-                .timeout(llm.requestTimeout());
+                .timeout(llm.requestTimeout())
+                .maxRetries(llm.maxRetries());
         if (llm.jsonMode()) {
             // ResponseFormat.JSON without a schema is sent as {"type":"json_object"} (Req 13.8).
             builder.responseFormat(ResponseFormat.JSON);
