@@ -13,6 +13,7 @@ import dev.investigator.report.FallbackReportBuilder;
 import dev.investigator.report.ParseResult;
 import dev.investigator.report.ReportAssembler;
 import dev.investigator.report.ReportDraftParser;
+import dev.investigator.report.ReportPublisher;
 import dev.investigator.store.EvidenceRepository;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
@@ -61,7 +62,8 @@ import org.springframework.stereotype.Component;
  *
  * <p>The terminal status is set with a compare-and-set {@link InvestigationRepository#transition}; only
  * the caller that wins it stores the report ({@link ReportRepository#saveIfAbsent}), sets the
- * Incident to {@code REPORTED}, evicts the chat memory and removes the context. An agent that returns
+ * Incident to {@code REPORTED}, writes the report to the log ({@link ReportPublisher}), evicts the chat
+ * memory and removes the context. An agent that returns
  * after the investigation ended has its result discarded with a warning (Req 14.10).
  */
 @Component
@@ -95,6 +97,7 @@ public class InvestigationOrchestrator {
     private final ReportDraftParser parser;
     private final ReportAssembler assembler;
     private final FallbackReportBuilder fallback;
+    private final ReportPublisher publisher;
     private final InvestigatorProperties properties;
     private final Clock clock;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -103,7 +106,7 @@ public class InvestigationOrchestrator {
             ReportRepository reports, EvidenceRepository evidenceRepository, EvidenceService evidenceService,
             InvestigationContextRegistry contexts, InvestigatorAgent agent, PromptInputs promptInputs,
             ReportDraftParser parser, ReportAssembler assembler, FallbackReportBuilder fallback,
-            InvestigatorProperties properties, Clock clock) {
+            ReportPublisher publisher, InvestigatorProperties properties, Clock clock) {
         this.investigations = investigations;
         this.incidents = incidents;
         this.reports = reports;
@@ -115,6 +118,7 @@ public class InvestigationOrchestrator {
         this.parser = parser;
         this.assembler = assembler;
         this.fallback = fallback;
+        this.publisher = publisher;
         this.properties = properties;
         this.clock = clock;
     }
@@ -316,10 +320,14 @@ public class InvestigationOrchestrator {
                     incidentId, outcome.status());
             return;
         }
-        if (!reports.saveIfAbsent(outcome.report())) {
+        boolean stored = reports.saveIfAbsent(outcome.report());
+        if (!stored) {
             log.warn("a report is already stored; keeping it incident_id={}", incidentId);
         }
         incidents.updateStatus(incidentId, IncidentStatus.REPORTED);
+        if (stored) {
+            publish(incidentId, outcome.report());
+        }
         agent.evictChatMemory(incidentId);
         contexts.remove(incidentId);
         log.info("investigation finished incident_id={} status={} tool_calls_used={}",
@@ -338,11 +346,19 @@ public class InvestigationOrchestrator {
             InvestigationReport report = fallback.build(incidentId, incident.affectedService(),
                     InvestigationStatus.FAILED, reason, List.of(), evidenceRepository.findByIncident(incidentId),
                     clock.instant());
-            reports.saveIfAbsent(report);
+            boolean stored = reports.saveIfAbsent(report);
             incidents.updateStatus(incidentId, IncidentStatus.REPORTED);
+            if (stored) {
+                publish(incidentId, report);
+            }
         } finally {
             contexts.remove(incidentId);
         }
+    }
+
+    /** Writes a newly stored report to the log (Req 17.9); the publisher never throws. */
+    private void publish(String incidentId, InvestigationReport report) {
+        incidents.find(incidentId).ifPresent(incident -> publisher.publish(incident, report));
     }
 
     private static void stopAccepting(InvestigationContext ctx, AtomicBoolean concluded) {

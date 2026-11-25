@@ -20,6 +20,7 @@ import dev.investigator.evidence.EvidenceService;
 import dev.investigator.report.FallbackReportBuilder;
 import dev.investigator.report.ReportAssembler;
 import dev.investigator.report.ReportDraftParser;
+import dev.investigator.report.ReportPublisher;
 import dev.investigator.store.EvidenceRepository;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
@@ -65,6 +66,7 @@ class InvestigationOrchestratorSmokeTest {
     @Autowired ReportDraftParser parser;
     @Autowired ReportAssembler assembler;
     @Autowired FallbackReportBuilder fallback;
+    @Autowired ReportPublisher publisher;
     @Autowired InvestigatorProperties properties;
     @Autowired Clock clock;
 
@@ -200,7 +202,7 @@ class InvestigationOrchestratorSmokeTest {
                 properties.tools(), properties.agent(), properties.services(), properties.mock());
         InvestigationOrchestrator shortOrchestrator = new InvestigationOrchestrator(investigations, incidents, reports,
                 evidenceRepository, evidenceService, contexts, blockingAgent, promptInputs, parser, assembler,
-                fallback, shortTimeout, clock);
+                fallback, publisher, shortTimeout, clock);
         try {
             Incident incident = newIncident();
             long started = System.nanoTime();
