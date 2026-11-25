@@ -102,10 +102,21 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+            <!-- Tests tagged "llm" need a real LLM; they run only with -Pllm-eval (Req 20.7, 20.8). -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>llm</excludedGroups>
+                </configuration>
+            </plugin>
             <!-- Runs *IT test classes (for example InvestigatorAgentIT) during verify. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>llm</excludedGroups>
+                </configuration>
                 <executions>
                     <execution>
                         <goals>
@@ -117,4 +128,31 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!-- Real-LLM evaluation: runs only tests tagged "llm"; they skip unless LLM_API_KEY is set. -->
+        <profile>
+            <id>llm-eval</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>llm</groups>
+                            <excludedGroups combine.self="override"/>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <groups>llm</groups>
+                            <excludedGroups combine.self="override"/>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
