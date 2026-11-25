@@ -26,8 +26,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 /**
  * Wiring of the Investigator_Agent with the Scripted_Chat_Model: prompts, tools, chat memory and the
- * round-trip limit (Req 13.1, 13.4, 13.5, 13.6, 19.2). No investigation context is registered, so
- * every tool call returns the "not running" error without touching any integration.
+ * round-trip limit (Req 13.1, 13.4, 13.5, 13.6, 19.2), and the error results for malformed tool
+ * arguments and unknown tool names (CP-35 e). Unless a test registers one, no investigation context
+ * exists, so every tool call returns the "not running" error without touching any integration.
  */
 @InvestigatorSpringBootTest
 class InvestigatorAgentWiringTest {
@@ -50,6 +51,9 @@ class InvestigatorAgentWiringTest {
 
     @Autowired
     InvestigatorProperties properties;
+
+    @Autowired
+    InvestigationContextRegistry contexts;
 
     @BeforeEach
     void resetModel() {
@@ -126,6 +130,41 @@ class InvestigatorAgentWiringTest {
         assertThatThrownBy(() -> investigate("{}"))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("maxToolCallingRoundTrips");
+    }
+
+    @Test
+    void malformedToolArgumentsReturnAnErrorResultAndCountAgainstTheBudget() {
+        InvestigationContext ctx = new InvestigationContext(INCIDENT_ID, Instant.parse(WINDOW_START),
+                Instant.parse(WINDOW_END), Instant.parse(WINDOW_END), "0".repeat(31) + "1", ALERT_EVIDENCE_ID,
+                Instant.parse("2026-11-23T14:40:00Z"), 15);
+        ctx.accepting().set(true);
+        contexts.register(ctx);
+        try {
+            model.enqueue(
+                    toolCall("getMetric", "{\"service\": \"checkout-api\", \"promql\": "),
+                    request -> finalAnswer(ScriptedChatModel.lastToolResult(request)
+                            .map(ToolExecutionResultMessage::text).orElse("none")).apply(request));
+
+            String answer = investigate("{}");
+
+            assertThat(answer).contains("tool arguments could not be parsed");
+            assertThat(ctx.used().get()).isEqualTo(1);
+        } finally {
+            contexts.remove(INCIDENT_ID);
+        }
+    }
+
+    @Test
+    void unknownToolNameReturnsAnErrorResultListingTheTools() {
+        model.enqueue(
+                toolCall("restartService", "{\"service\": \"checkout-api\"}"),
+                request -> finalAnswer(ScriptedChatModel.lastToolResult(request)
+                        .map(ToolExecutionResultMessage::text).orElse("none")).apply(request));
+
+        String answer = investigate("{}");
+
+        assertThat(answer).contains("unknown tool").contains("getMetric").contains("findRunbook")
+                .doesNotContain("restartService");
     }
 
     @Test
