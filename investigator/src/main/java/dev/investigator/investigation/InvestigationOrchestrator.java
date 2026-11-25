@@ -61,9 +61,11 @@ import org.springframework.stereotype.Component;
  * </ul>
  *
  * <p>The terminal status is set with a compare-and-set {@link InvestigationRepository#transition}; only
- * the caller that wins it stores the report ({@link ReportRepository#saveIfAbsent}), sets the
- * Incident to {@code REPORTED}, writes the report to the log ({@link ReportPublisher}), evicts the chat
- * memory and removes the context. An agent that returns
+ * the caller that wins it removes the context, stores the report ({@link ReportRepository#saveIfAbsent}),
+ * sets the Incident to {@code REPORTED}, writes the report to the log ({@link ReportPublisher}) and
+ * evicts the chat memory. The {@code accepting} flag is true only between the {@code RUNNING}
+ * transition and the end of the agent call, so the {@code ToolGuard} refuses tool calls in every
+ * other state (Req 11.13). An agent that returns
  * after the investigation ended has its result discarded with a warning (Req 14.10).
  */
 @Component
@@ -320,6 +322,9 @@ public class InvestigationOrchestrator {
                     incidentId, outcome.status());
             return;
         }
+        // Removed before the report becomes visible, so a reader that sees the report also sees no
+        // context; tool calls were already refused since stopAccepting (Req 11.13).
+        contexts.remove(incidentId);
         boolean stored = reports.saveIfAbsent(outcome.report());
         if (!stored) {
             log.warn("a report is already stored; keeping it incident_id={}", incidentId);
@@ -329,7 +334,6 @@ public class InvestigationOrchestrator {
             publish(incidentId, outcome.report());
         }
         agent.evictChatMemory(incidentId);
-        contexts.remove(incidentId);
         log.info("investigation finished incident_id={} status={} tool_calls_used={}",
                 incidentId, outcome.status(), ctx.used().get());
     }

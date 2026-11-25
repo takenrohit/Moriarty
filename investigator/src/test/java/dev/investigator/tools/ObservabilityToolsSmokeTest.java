@@ -4,12 +4,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.domain.Evidence;
 import dev.investigator.domain.EvidenceType;
+import dev.investigator.evidence.EvidenceService;
+import dev.investigator.evidence.LogSummarizer;
+import dev.investigator.evidence.MetricSummarizer;
+import dev.investigator.evidence.TraceSummarizer;
+import dev.investigator.integration.changes.ChangeClient;
+import dev.investigator.integration.logs.LogClient;
+import dev.investigator.integration.metrics.MetricsClient;
+import dev.investigator.integration.traces.TraceClient;
 import dev.investigator.investigation.InvestigationContext;
 import dev.investigator.investigation.InvestigationContextRegistry;
+import dev.investigator.runbook.RunbookCatalog;
 import dev.investigator.store.EvidenceRepository;
 import dev.investigator.testsupport.InvestigatorSpringBootTest;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
@@ -42,6 +53,39 @@ class ObservabilityToolsSmokeTest {
     @Autowired
     ObjectMapper mapper;
 
+    @Autowired
+    ToolGuard guard;
+
+    @Autowired
+    EvidenceService evidenceService;
+
+    @Autowired
+    MetricsClient metrics;
+
+    @Autowired
+    TraceClient traces;
+
+    @Autowired
+    ChangeClient changes;
+
+    @Autowired
+    RunbookCatalog runbooks;
+
+    @Autowired
+    MetricSummarizer metricSummarizer;
+
+    @Autowired
+    LogSummarizer logSummarizer;
+
+    @Autowired
+    TraceSummarizer traceSummarizer;
+
+    @Autowired
+    InvestigatorProperties properties;
+
+    @Autowired
+    Clock clock;
+
     String incidentId;
 
     @BeforeEach
@@ -52,6 +96,7 @@ class ObservabilityToolsSmokeTest {
         registry.register(new InvestigationContext(incidentId, A.minus(Duration.ofMinutes(60)),
                 A.plus(Duration.ofMinutes(10)), A.plus(Duration.ofMinutes(3)), "0".repeat(32),
                 "ev-" + incidentId + "-1", A, 15));
+        registry.find(incidentId).orElseThrow().accepting().set(true);
     }
 
     @Test
@@ -150,8 +195,15 @@ class ObservabilityToolsSmokeTest {
 
     @Test
     void clientExceptionGivesErrorResultAndNoEvidence() throws Exception {
-        // The mock clients reject a null service with an exception.
-        JsonNode json = mapper.readTree(tools.searchLogs(incidentId, null, "x", START, END));
+        // The guard rejects every argument the mock clients would throw on, so use a failing log client.
+        LogClient failing = (service, logql, start, end, limit) -> {
+            throw new IllegalStateException("log backend unavailable");
+        };
+        ObservabilityTools withFailingLogs = new ObservabilityTools(guard, evidenceService, metrics, failing,
+                traces, changes, runbooks, metricSummarizer, logSummarizer, traceSummarizer, mapper, properties,
+                clock);
+
+        JsonNode json = mapper.readTree(withFailingLogs.searchLogs(incidentId, "checkout-api", "x", START, END));
 
         assertThat(json.get("error").asText()).isEqualTo(ObservabilityTools.INTEGRATION_FAILED);
         assertThat(json.get("hint").asText()).isEqualTo(ObservabilityTools.INTEGRATION_HINT);
@@ -162,7 +214,7 @@ class ObservabilityToolsSmokeTest {
     void unknownInvestigationIsRejected() throws Exception {
         JsonNode json = mapper.readTree(tools.getRecentChanges("inc-000000000000", "checkout-api", 24));
 
-        assertThat(json.get("error").asText()).isEqualTo(ObservabilityTools.NOT_RUNNING);
+        assertThat(json.get("error").asText()).isEqualTo(ToolGuard.NOT_RUNNING);
     }
 
     private Evidence only() {

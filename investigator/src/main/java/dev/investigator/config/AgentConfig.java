@@ -2,11 +2,18 @@ package dev.investigator.config;
 
 import dev.investigator.investigation.InvestigatorAgent;
 import dev.investigator.tools.ObservabilityTools;
+import dev.investigator.tools.ToolGuard;
+import dev.investigator.tools.ToolResults;
+import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.tool.ToolErrorHandlerResult;
+import java.util.Arrays;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -23,6 +30,9 @@ import org.springframework.context.annotation.Configuration;
  * still built, with a model that fails every call; the application starts, and each investigation
  * ends {@code FAILED} with an evidence-only report. A missing {@code LLM_API_KEY} with the LLM enabled
  * still fails startup in {@link LlmConfig} (Req 2.6).
+ *
+ * <p>Tool calls with arguments LangChain4j cannot parse, and calls to tool names that do not exist,
+ * return a {@link ToolResults#error} JSON to the model instead of failing the investigation.
  */
 @Configuration(proxyBeanMethods = false)
 public class AgentConfig {
@@ -33,15 +43,18 @@ public class AgentConfig {
 
     private static final Logger log = LoggerFactory.getLogger(AgentConfig.class);
 
+    static final String UNKNOWN_TOOL = "unknown tool";
+
     @Bean
-    InvestigatorAgent investigatorAgent(
-            ObjectProvider<ChatModel> chatModels, ObservabilityTools tools, InvestigatorProperties properties) {
+    InvestigatorAgent investigatorAgent(ObjectProvider<ChatModel> chatModels, ObservabilityTools tools,
+            ToolGuard guard, InvestigatorProperties properties) {
         ChatModel chatModel = chatModels.getIfAvailable();
         if (chatModel == null) {
             log.warn("{} Investigations will fail until a ChatModel is configured.", NO_CHAT_MODEL);
             chatModel = new UnavailableChatModel();
         }
         int maxMessages = properties.agent().memoryMaxMessages();
+        String unknownToolResult = ToolResults.error(UNKNOWN_TOOL, "use one of: " + String.join(", ", toolNames()));
         return AiServices.builder(InvestigatorAgent.class)
                 .chatModel(chatModel)
                 .tools(tools)
@@ -53,7 +66,33 @@ public class AgentConfig {
                 // the final answer included, so the model gets budget + 1 tool rounds (the
                 // budget plus the one the guard refuses) and one response to return the report.
                 .maxToolCallingRoundTrips(properties.budget().maxToolCalls() + 2)
+                // Malformed arguments never reach the tool method; the guard still counts the call
+                // and the model gets an error result instead of the whole run failing (CP-35 e).
+                .toolArgumentsErrorHandler((error, context) -> {
+                    String toolName = context.toolExecutionRequest().name();
+                    log.warn("tool arguments could not be parsed tool_name={} error={}", toolName,
+                            error.getClass().getSimpleName());
+                    return ToolErrorHandlerResult.text(guard.malformedArguments(context.memoryId(), toolName));
+                })
+                // An unknown tool name gets an error result listing the real tools; the name the model
+                // sent is not echoed.
+                .hallucinatedToolNameStrategy(request -> {
+                    log.warn("model called an unknown tool");
+                    return ToolExecutionResultMessage.from(request, unknownToolResult);
+                })
                 .build();
+    }
+
+    /** Names of the {@code @Tool} methods of {@link ObservabilityTools}, sorted. */
+    static List<String> toolNames() {
+        return Arrays.stream(ObservabilityTools.class.getMethods())
+                .filter(m -> m.isAnnotationPresent(Tool.class))
+                .map(m -> {
+                    String name = m.getAnnotation(Tool.class).name();
+                    return name == null || name.isBlank() ? m.getName() : name;
+                })
+                .sorted()
+                .toList();
     }
 
     /** Stand-in used when no Chat_Model bean exists; every call fails with {@link #NO_CHAT_MODEL}. */

@@ -9,8 +9,14 @@ import java.util.Objects;
 /**
  * Tool_Result of {@code getRecentChanges} (Req 10.6). The tool stores one Evidence per change, so
  * this record has no Evidence_ID of its own; each {@link Change} carries one.
+ *
+ * @param lookbackHours the applied look-back, at most 24
+ * @param appliedStart start of the applied look-back range ({@code appliedEnd − lookbackHours})
+ * @param appliedEnd end of the applied look-back range (the Investigation_Window end)
+ * @param clamped true when the requested look-back was larger than the maximum (Req 11.8)
  */
-public record ChangesSummary(String service, int lookbackHours, boolean clamped, List<Change> changes) {
+public record ChangesSummary(String service, int lookbackHours, Instant appliedStart, Instant appliedEnd,
+        boolean clamped, List<Change> changes) {
 
     public ChangesSummary {
         changes = changes == null ? List.of() : List.copyOf(changes);
