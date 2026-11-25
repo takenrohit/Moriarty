@@ -21,6 +21,7 @@ import dev.investigator.report.FallbackReportBuilder;
 import dev.investigator.report.ReportAssembler;
 import dev.investigator.report.ReportDraftParser;
 import dev.investigator.report.ReportPublisher;
+import dev.investigator.report.ReportValidator;
 import dev.investigator.store.EvidenceRepository;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
@@ -64,6 +65,7 @@ class InvestigationOrchestratorSmokeTest {
     @Autowired InvestigationContextRegistry contexts;
     @Autowired PromptInputs promptInputs;
     @Autowired ReportDraftParser parser;
+    @Autowired ReportValidator validator;
     @Autowired ReportAssembler assembler;
     @Autowired FallbackReportBuilder fallback;
     @Autowired ReportPublisher publisher;
@@ -127,15 +129,32 @@ class InvestigationOrchestratorSmokeTest {
         InvestigationReport report = awaitReport(incident.id());
         assertThat(report.status()).isEqualTo(InvestigationStatus.INCONCLUSIVE);
         assertThat(report.summary()).startsWith("Investigation inconclusive: " + InvestigationOrchestrator.DRAFT_INVALID);
-        assertThat(report.openQuestions()).hasSize(2);
+        // The reason, then every schema error: five missing fields and the unknown one.
+        assertThat(report.openQuestions()).hasSize(7);
         assertThat(report.openQuestions().get(0)).isEqualTo(InvestigationOrchestrator.DRAFT_INVALID);
-        assertThat(report.openQuestions().get(1)).startsWith("$.");
+        assertThat(report.openQuestions().subList(1, 7)).allSatisfy(q -> assertThat(q).startsWith("$"))
+                .anySatisfy(q -> assertThat(q).startsWith("$.surprise"));
         assertThat(report.hypotheses()).isEmpty();
         assertThat(report.timeline().entries()).singleElement()
                 .satisfies(e -> assertThat(e.evidenceIds()).containsExactly(alertId(incident.id())));
         assertThat(report.actions()).extracting(RecommendedAction::type)
                 .containsExactly(ActionType.INVESTIGATE, ActionType.ESCALATE);
         assertThat(incidents.find(incident.id()).orElseThrow().status()).isEqualTo(IncidentStatus.REPORTED);
+    }
+
+    @Test
+    void draftCitingAnotherIncidentGivesInconclusiveFallbackNamingTheViolation() throws Exception {
+        Incident incident = newIncident();
+        model.enqueue(finalAnswer(validDraft(incident.id()).replace("\"supportingEvidenceIds\": [\"" + alertId(incident.id()),
+                "\"supportingEvidenceIds\": [\"ev-inc-000000000000-1")));
+
+        orchestrator.start(incident);
+
+        InvestigationReport report = awaitReport(incident.id());
+        assertThat(report.status()).isEqualTo(InvestigationStatus.INCONCLUSIVE);
+        assertThat(report.openQuestions()).containsExactly(InvestigationOrchestrator.DRAFT_INVALID,
+                "$.hypotheses[0].supportingEvidenceIds[0]: is not an evidence ID of incident " + incident.id()
+                        + " (expected ev-" + incident.id() + "-<n>)");
     }
 
     @Test
@@ -201,8 +220,8 @@ class InvestigationOrchestratorSmokeTest {
                 new InvestigatorProperties.Budget(properties.budget().maxToolCalls(), Duration.ofMillis(300)),
                 properties.tools(), properties.agent(), properties.services(), properties.mock());
         InvestigationOrchestrator shortOrchestrator = new InvestigationOrchestrator(investigations, incidents, reports,
-                evidenceRepository, evidenceService, contexts, blockingAgent, promptInputs, parser, assembler,
-                fallback, publisher, shortTimeout, clock);
+                evidenceRepository, evidenceService, contexts, blockingAgent, promptInputs, parser, validator,
+                assembler, fallback, publisher, shortTimeout, clock);
         try {
             Incident incident = newIncident();
             long started = System.nanoTime();

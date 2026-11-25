@@ -23,7 +23,7 @@ import java.util.Set;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 
-/** Example tests for the first versions of the fallback builder, assembler and draft parser (Req 14.6, 14.11). */
+/** Example tests for the fallback builder, assembler and draft parser (Req 14.6, 14.11, 15.3, 15.10, 16.4). */
 class ReportPipelineSmokeTest {
 
     private static final String INC = "inc-0123456789ab";
@@ -103,6 +103,30 @@ class ReportPipelineSmokeTest {
                 .containsExactly(Instant.parse("2026-11-23T14:38:00Z"));
         assertThat(report.actions()).extracting(RecommendedAction::order).containsExactly(1, 2);
         assertThat(report.openQuestions()).containsExactly("q1", "budget");
+    }
+
+    @Test
+    void assemblerAppliesTheActionPolicy() {
+        ReportDraft draft = new ReportDraft(INC, "summary", List.of(), List.of(),
+                List.of(new DraftAction(1, ActionType.ROLLBACK, "roll back", false, List.of(id(1))),
+                        new DraftAction(2, ActionType.ESCALATE, "page", true, List.of(id(1)))),
+                List.of());
+
+        InvestigationReport report = assembler.assemble(draft, context(), InvestigationStatus.COMPLETED, List.of(),
+                List.of(), NOW);
+
+        assertThat(report.actions()).extracting(RecommendedAction::requiresApproval).containsExactly(true, false);
+    }
+
+    @Test
+    void parserStripsAJsonFenceAndChecksTimelineTimes() {
+        String timeline = "{\"incidentId\":\"%s\",\"summary\":\"s\",\"timeline\":[{\"at\":\"%s\",\"description\":\"d\","
+                + "\"evidenceIds\":[\"%s\"]}],\"hypotheses\":[],\"actions\":[],\"openQuestions\":[]}";
+
+        assertThat(parser.parse("```json\n" + timeline.formatted(INC, "2026-11-23T14:38:00Z", id(1)) + "\n```"))
+                .isInstanceOf(ParseResult.Ok.class);
+        assertThat(errors(timeline.formatted(INC, "2026-11-23 14:38", id(1)))).singleElement()
+                .satisfies(e -> assertThat(e).startsWith("$.timeline[0].at: "));
     }
 
     @Test

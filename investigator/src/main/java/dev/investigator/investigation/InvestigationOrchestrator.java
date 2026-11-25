@@ -14,6 +14,8 @@ import dev.investigator.report.ParseResult;
 import dev.investigator.report.ReportAssembler;
 import dev.investigator.report.ReportDraftParser;
 import dev.investigator.report.ReportPublisher;
+import dev.investigator.report.ReportValidator;
+import dev.investigator.report.ValidationResult;
 import dev.investigator.store.EvidenceRepository;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
@@ -54,7 +56,10 @@ import org.springframework.stereotype.Component;
  *   <li>valid draft, budget not exhausted: report from the draft, {@code COMPLETED};
  *   <li>valid draft, budget exhausted: report from the draft plus a budget open question,
  *       {@code INCONCLUSIVE};
- *   <li>draft fails parsing: fallback report listing the errors, {@code INCONCLUSIVE};
+ *   <li>draft fails parsing ({@link ReportDraftParser}), semantic validation
+ *       ({@link ReportValidator#validateDraft}) or the final check of the assembled report
+ *       ({@link ReportValidator#validateReport}): fallback report listing the errors,
+ *       {@code INCONCLUSIVE};
  *   <li>timeout: fallback report, {@code INCONCLUSIVE}; the agent thread is interrupted;
  *   <li>tool-calling round-trip limit: fallback report, {@code INCONCLUSIVE};
  *   <li>any other exception: fallback report, {@code FAILED}.
@@ -97,6 +102,7 @@ public class InvestigationOrchestrator {
     private final InvestigatorAgent agent;
     private final PromptInputs promptInputs;
     private final ReportDraftParser parser;
+    private final ReportValidator validator;
     private final ReportAssembler assembler;
     private final FallbackReportBuilder fallback;
     private final ReportPublisher publisher;
@@ -107,8 +113,9 @@ public class InvestigationOrchestrator {
     public InvestigationOrchestrator(InvestigationRepository investigations, IncidentRepository incidents,
             ReportRepository reports, EvidenceRepository evidenceRepository, EvidenceService evidenceService,
             InvestigationContextRegistry contexts, InvestigatorAgent agent, PromptInputs promptInputs,
-            ReportDraftParser parser, ReportAssembler assembler, FallbackReportBuilder fallback,
-            ReportPublisher publisher, InvestigatorProperties properties, Clock clock) {
+            ReportDraftParser parser, ReportValidator validator, ReportAssembler assembler,
+            FallbackReportBuilder fallback, ReportPublisher publisher, InvestigatorProperties properties,
+            Clock clock) {
         this.investigations = investigations;
         this.incidents = incidents;
         this.reports = reports;
@@ -118,6 +125,7 @@ public class InvestigationOrchestrator {
         this.agent = agent;
         this.promptInputs = promptInputs;
         this.parser = parser;
+        this.validator = validator;
         this.assembler = assembler;
         this.fallback = fallback;
         this.publisher = publisher;
@@ -277,25 +285,37 @@ public class InvestigationOrchestrator {
         };
     }
 
+    /**
+     * Parses and validates the draft, assembles the report and checks it again (Req 14.4, 14.6, 14.8,
+     * 15). Any failure gives the fallback report with the errors as open questions, {@code INCONCLUSIVE}.
+     */
     private Outcome fromDraft(InvestigationContext ctx, String raw) {
         String incidentId = ctx.incidentId();
-        List<String> errors;
-        switch (parser.parse(raw)) {
-            case ParseResult.Ok ok -> {
-                boolean exhausted = ctx.budgetExhausted().get();
-                InvestigationStatus status = exhausted ? InvestigationStatus.INCONCLUSIVE : InvestigationStatus.COMPLETED;
-                List<String> extra = exhausted ? List.of(budgetQuestion(ctx.budget())) : List.of();
-                try {
-                    InvestigationReport report = assembler.assemble(ok.draft(), ctx, status, extra,
-                            evidenceService.refs(incidentId), clock.instant());
+        ParseResult parsed = parser.parse(raw);
+        List<String> errors = switch (parsed) {
+            case ParseResult.Invalid invalid -> invalid.errors();
+            case ParseResult.Ok ok -> validator.validateDraft(ok.draft(), incidentId).violations();
+        };
+        String stage = parsed instanceof ParseResult.Ok ? "validation" : "parsing";
+        if (errors.isEmpty() && parsed instanceof ParseResult.Ok ok) {
+            boolean exhausted = ctx.budgetExhausted().get();
+            InvestigationStatus status = exhausted ? InvestigationStatus.INCONCLUSIVE : InvestigationStatus.COMPLETED;
+            List<String> extra = exhausted ? List.of(budgetQuestion(ctx.budget())) : List.of();
+            try {
+                InvestigationReport report = assembler.assemble(ok.draft(), ctx, status, extra,
+                        evidenceService.refs(incidentId), clock.instant());
+                errors = validator.validateReport(report).violations();
+                if (errors.isEmpty()) {
                     return new Outcome(status, report);
-                } catch (IllegalArgumentException e) {
-                    errors = List.of(e.getMessage());
                 }
+                stage = "report validation";
+            } catch (IllegalArgumentException e) {
+                errors = List.of(e.getMessage());
+                stage = "assembly";
             }
-            case ParseResult.Invalid invalid -> errors = invalid.errors();
         }
-        log.warn("report draft rejected incident_id={} error_count={}", incidentId, errors.size());
+        log.warn("report draft rejected incident_id={} stage=\"{}\" error_count={}", incidentId, stage,
+                errors.size());
         return fallbackOutcome(incidentId, InvestigationStatus.INCONCLUSIVE, DRAFT_INVALID, errors);
     }
 
@@ -306,9 +326,24 @@ public class InvestigationOrchestrator {
 
     private Outcome fallbackOutcome(String incidentId, InvestigationStatus status, String reason, List<String> details) {
         String service = incidents.find(incidentId).map(Incident::affectedService).orElse(null);
+        return new Outcome(status, fallbackReport(incidentId, service, status, reason, details));
+    }
+
+    /**
+     * Builds the fallback report and checks it with {@code validateReport} (Req 14.12). There is nothing
+     * further to fall back to, so an invalid fallback report is logged and still stored, keeping one
+     * report per Investigation (Req 14.9).
+     */
+    private InvestigationReport fallbackReport(String incidentId, String service, InvestigationStatus status,
+            String reason, List<String> details) {
         InvestigationReport report = fallback.build(incidentId, service, status, reason, details,
                 evidenceRepository.findByIncident(incidentId), clock.instant());
-        return new Outcome(status, report);
+        ValidationResult check = validator.validateReport(report);
+        if (!check.valid()) {
+            log.error("fallback report failed validation; storing it anyway incident_id={} violations={}",
+                    incidentId, check.violations());
+        }
+        return report;
     }
 
     /** Writes the result if this caller wins the terminal transition (Req 14.9, 14.10). */
@@ -347,9 +382,8 @@ public class InvestigationOrchestrator {
                 log.warn("investigation already left PENDING; not failing it incident_id={}", incidentId);
                 return;
             }
-            InvestigationReport report = fallback.build(incidentId, incident.affectedService(),
-                    InvestigationStatus.FAILED, reason, List.of(), evidenceRepository.findByIncident(incidentId),
-                    clock.instant());
+            InvestigationReport report = fallbackReport(incidentId, incident.affectedService(),
+                    InvestigationStatus.FAILED, reason, List.of());
             boolean stored = reports.saveIfAbsent(report);
             incidents.updateStatus(incidentId, IncidentStatus.REPORTED);
             if (stored) {

@@ -25,12 +25,14 @@ import org.springframework.stereotype.Component;
  *
  * <p>The Incident_ID comes from the investigation context, timeline times are converted to
  * {@link Instant}, actions are sorted by {@code order} (stable for equal orders), the extra open
- * questions are appended to the draft's, and the evidence references and status are attached.
- * Task 17.1 adds the {@code ActionPolicy}, which overwrites {@code requiresApproval}; until then the
- * draft's value is kept.
+ * questions are appended to the draft's, and the evidence references and status are attached. The
+ * {@link ActionPolicy} replaces each action's {@code requiresApproval} (Req 16.4, 16.5). The draft is
+ * expected to have passed {@link ReportDraftParser} and {@link ReportValidator#validateDraft}.
  */
 @Component
 public final class ReportAssembler {
+
+    private final ActionPolicy policy = new ActionPolicy();
 
     /**
      * @param status {@code COMPLETED} or {@code INCONCLUSIVE}
@@ -58,11 +60,11 @@ public final class ReportAssembler {
                 .map(ReportAssembler::hypothesis)
                 .toList();
 
-        List<RecommendedAction> actions = draft.actions().stream()
+        List<RecommendedAction> actions = policy.apply(ctx.incidentId(), draft.actions().stream()
                 .sorted(Comparator.comparingInt(DraftAction::order))
                 .map(a -> new RecommendedAction(a.order(), a.type(), a.description(), a.requiresApproval(),
                         a.evidenceIds()))
-                .toList();
+                .toList());
 
         List<String> openQuestions = new ArrayList<>(draft.openQuestions());
         if (extraOpenQuestions != null) {
