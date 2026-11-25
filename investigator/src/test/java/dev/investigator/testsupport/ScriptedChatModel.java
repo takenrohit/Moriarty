@@ -10,13 +10,17 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.output.FinishReason;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Scripted_Chat_Model: a {@link ChatModel} that answers each request with the next scripted step and
@@ -36,6 +40,7 @@ public final class ScriptedChatModel implements ChatModel {
     public static final String DEFAULT_FINAL_ANSWER = "{}";
 
     private static final AtomicLong TOOL_CALL_IDS = new AtomicLong();
+    private static final Pattern EVIDENCE_ID_FIELD = Pattern.compile("\"evidenceId\"\\s*:\\s*\"(ev-[^\"]+)\"");
 
     private final ConcurrentLinkedQueue<Function<ChatRequest, ChatResponse>> steps = new ConcurrentLinkedQueue<>();
     private final List<ChatRequest> requests = new CopyOnWriteArrayList<>();
@@ -122,5 +127,33 @@ public final class ScriptedChatModel implements ChatModel {
     public static Optional<ToolExecutionResultMessage> lastToolResult(ChatRequest request) {
         List<ToolExecutionResultMessage> results = toolResults(request);
         return results.isEmpty() ? Optional.empty() : Optional.of(results.get(results.size() - 1));
+    }
+
+    /**
+     * The Evidence_IDs named by {@code "evidenceId"} fields in one tool result, in order of appearance
+     * and without duplicates. Error and not-found results name none.
+     */
+    public static List<String> evidenceIds(ToolExecutionResultMessage result) {
+        Set<String> ids = new LinkedHashSet<>();
+        Matcher m = EVIDENCE_ID_FIELD.matcher(result.text());
+        while (m.find()) {
+            ids.add(m.group(1));
+        }
+        return List.copyOf(ids);
+    }
+
+    /** The Evidence_IDs in all tool results of the request's conversation, oldest first, without duplicates. */
+    public static List<String> evidenceIds(ChatRequest request) {
+        Set<String> ids = new LinkedHashSet<>();
+        toolResults(request).forEach(r -> ids.addAll(evidenceIds(r)));
+        return List.copyOf(ids);
+    }
+
+    /** The Evidence_IDs in the tool results of the request's conversation for one tool, oldest first. */
+    public static List<String> evidenceIds(ChatRequest request, String toolName) {
+        Set<String> ids = new LinkedHashSet<>();
+        toolResults(request).stream().filter(r -> toolName.equals(r.toolName()))
+                .forEach(r -> ids.addAll(evidenceIds(r)));
+        return List.copyOf(ids);
     }
 }
