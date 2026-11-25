@@ -1,16 +1,298 @@
-# Phase 1: the investigator only; mock integrations run in-process (CP-5).
-# Start: docker compose -f deploy/docker-compose.yml up --build
+# Phase 2 local stack: the investigator, three instrumented mock services, a fake GitHub,
+# and the observability backends, all on one network addressed by service name.
+#
+# Start:    docker compose -f deploy/docker-compose.yml up --build
+# Validate: docker compose -f deploy/docker-compose.yml config
+#
+# Memory limits keep the whole stack around 5 GB so it fits Docker Desktop with ~8 GB (CP-54).
+# Backend config files under deploy/ are mounted read-only.
+#
+# Host ports: investigator 8080, checkout-api 8081, payment-gateway 8082, payment-provider 8083,
+# fake-github 8089, grafana 3000, prometheus 9090, alertmanager 9093, loki 3100, tempo 3200,
+# and on 127.0.0.1 only: postgres 5432, redis 6379.
+
+name: moriarty
+
+networks:
+  investigator-net:
+    driver: bridge
+
+# One image built from ../mock-services runs three times with a different role (CP-56).
+# Image contract: Alpine-based (busybox wget for the healthcheck), listens on 8080, serves
+# /actuator/health, and loads the OpenTelemetry Java agent via JAVA_TOOL_OPTIONS in the image.
+x-mock-service: &mock-service
+  build:
+    context: ../mock-services
+  image: moriarty/mock-services:local
+  networks: [investigator-net]
+  depends_on:
+    otel-collector:
+      condition: service_started
+  healthcheck:
+    test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+    interval: 10s
+    timeout: 5s
+    start_period: 60s
+    retries: 3
+  deploy:
+    resources:
+      limits:
+        memory: 384m
+
+x-mock-otel-env: &mock-otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+
 services:
   investigator:
     build:
       context: ../investigator
     ports:
       - "8080:8080"
+    networks: [investigator-net]
     env_file:
-      # LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, ... (copy ../investigator/.env.example to .env).
-      # required: false keeps "docker compose config" working without the file;
-      # the investigator then fails startup with "LLM_API_KEY is not set".
+      # LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, GITHUB_TOKEN, WEBHOOK_SECRET, SLACK_* ...
+      # (copy ../investigator/.env.example to .env). required: false keeps
+      # "docker compose config" working without the file; the investigator then fails
+      # startup with "LLM_API_KEY is not set".
       - path: ../investigator/.env
         required: false
     environment:
-      SPRING_PROFILES_ACTIVE: mock
+      # Values here override ../investigator/.env, so the in-stack wiring always wins.
+      SPRING_PROFILES_ACTIVE: real,postgres,redis
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75.0
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      TEMPO_URL: http://tempo:3200
+      # Fake GitHub by default (CP-46). For real GitHub, set GITHUB_API_URL=https://api.github.com
+      # and GITHUB_REPOSITORY in the shell (or deploy/.env), and GITHUB_TOKEN in ../investigator/.env.
+      GITHUB_API_URL: ${GITHUB_API_URL:-http://fake-github:8080}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-moriarty-demo/checkout-platform}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/investigator
+      SPRING_DATASOURCE_USERNAME: investigator
+      # Local-only default; override POSTGRES_PASSWORD in the shell or deploy/.env.
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-investigator-local}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # The JRE image has no curl or wget; bash's /dev/tcp sends the request (same as the Dockerfile).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /actuator/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"status\":\"UP\"' <&3"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  mock-checkout-api:
+    <<: *mock-service
+    ports:
+      - "8081:8080"
+    environment:
+      <<: *mock-otel-env
+      APP_ROLE: checkout
+      OTEL_SERVICE_NAME: checkout-api
+      OTEL_RESOURCE_ATTRIBUTES: service.version=${CHECKOUT_API_VERSION:-v1.0.0},deployment.environment=local
+      DOWNSTREAM_URL: http://mock-payment-gateway:8080
+
+  mock-payment-gateway:
+    <<: *mock-service
+    ports:
+      - "8082:8080"
+    environment:
+      <<: *mock-otel-env
+      APP_ROLE: gateway
+      OTEL_SERVICE_NAME: payment-gateway
+      OTEL_RESOURCE_ATTRIBUTES: service.version=${PAYMENT_GATEWAY_VERSION:-v1.0.0},deployment.environment=local
+      DOWNSTREAM_URL: http://mock-payment-provider:8080
+
+  mock-payment-provider:
+    <<: *mock-service
+    ports:
+      - "8083:8080"
+    environment:
+      <<: *mock-otel-env
+      APP_ROLE: provider
+      OTEL_SERVICE_NAME: payment-provider
+      OTEL_RESOURCE_ATTRIBUTES: service.version=${PAYMENT_PROVIDER_VERSION:-v1.0.0},deployment.environment=local
+
+  # WireMock serving GitHub-compatible deployment and commit stubs (CP-46).
+  # The stub mappings under deploy/fake-github are added with the deploy script (plan 2.2).
+  fake-github:
+    image: wiremock/wiremock:3.13.2-alpine
+    command: ["--disable-banner"]
+    ports:
+      - "8089:8080"
+    networks: [investigator-net]
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+    ports:
+      - "9090:9090"
+    networks: [investigator-net]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  alertmanager:
+    image: prom/alertmanager:v0.35.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+    ports:
+      - "9093:9093"
+    networks: [investigator-net]
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  loki:
+    image: grafana/loki:3.7.10
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./loki:/etc/loki:ro
+    ports:
+      - "3100:3100"
+    networks: [investigator-net]
+    healthcheck:
+      # The image is distroless (no shell or wget); Loki 3.7's -health flag probes /ready.
+      test: ["CMD", "/usr/bin/loki", "-health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  tempo:
+    image: grafana/tempo:3.1.1
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - ./tempo:/etc/tempo:ro
+    ports:
+      - "3200:3200"
+    networks: [investigator-net]
+    healthcheck:
+      # The image is distroless (no shell or wget); Tempo 3.x's -health flag probes /ready.
+      test: ["CMD", "/tempo", "-config.file=/etc/tempo/tempo.yml", "-health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  grafana:
+    image: grafana/grafana:13.3.2
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    networks: [investigator-net]
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.166.0
+    command: ["--config=/etc/otelcol/otel-collector-config.yml"]
+    volumes:
+      - ./otel-collector:/etc/otelcol:ro
+    networks: [investigator-net]
+    depends_on:
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  postgres:
+    image: postgres:17.12-alpine
+    environment:
+      POSTGRES_DB: investigator
+      POSTGRES_USER: investigator
+      # Local-only default; override POSTGRES_PASSWORD in the shell or deploy/.env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-investigator-local}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks: [investigator-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U investigator -d investigator"]
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  redis:
+    image: redis:8.12.0-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks: [investigator-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+volumes:
+  postgres-data:

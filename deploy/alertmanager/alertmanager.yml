@@ -1,0 +1,13 @@
+# Alertmanager v0.35 configuration for the local Compose stack.
+# Mounted read-only at /etc/alertmanager.
+# Placeholder: every alert goes to a receiver with no integrations (dropped).
+# The webhook receiver for the investigator is added in plan 2.3.
+route:
+  receiver: placeholder
+  group_by: ["alertname", "service"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 1h
+
+receivers:
+  - name: placeholder

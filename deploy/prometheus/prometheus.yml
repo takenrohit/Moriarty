@@ -1,0 +1,31 @@
+# Prometheus v3.16 configuration for the local Compose stack.
+# Mounted read-only at /etc/prometheus. Alert rules are added under rules/ (plan 2.3).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Metrics the mock services export over OTLP, re-exposed by the collector's
+  # prometheus exporter. Resource attributes (service_name, service_version) become labels.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # Direct scrape of the mock services' actuator endpoint (served when the
+  # mock-services app exposes /actuator/prometheus).
+  - job_name: mock-services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - "mock-checkout-api:8080"
+          - "mock-payment-gateway:8080"
+          - "mock-payment-provider:8080"
