@@ -2,7 +2,6 @@ package dev.investigator.tools;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.investigator.config.InvestigatorProperties;
-import dev.investigator.domain.Evidence;
 import dev.investigator.domain.EvidenceType;
 import dev.investigator.evidence.ChangesSummary;
 import dev.investigator.evidence.EvidenceService;
@@ -11,6 +10,7 @@ import dev.investigator.evidence.MetricSummarizer;
 import dev.investigator.evidence.MetricSummary;
 import dev.investigator.evidence.ResultCapper;
 import dev.investigator.evidence.RunbookSummary;
+import dev.investigator.evidence.StoredEvidence;
 import dev.investigator.evidence.TraceSummarizer;
 import dev.investigator.integration.changes.ChangeClient;
 import dev.investigator.integration.changes.ChangeRecord;
@@ -24,6 +24,7 @@ import dev.investigator.integration.traces.TraceRecord;
 import dev.investigator.integration.traces.TraceSearchResult;
 import dev.investigator.investigation.InvestigationContext;
 import dev.investigator.investigation.InvestigationScope;
+import dev.investigator.logging.LogFields;
 import dev.investigator.runbook.RunbookCatalog;
 import dev.investigator.runbook.RunbookMatch;
 import dev.langchain4j.agent.tool.P;
@@ -39,6 +40,7 @@ import java.util.Optional;
 import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.spi.LoggingEventBuilder;
 import org.springframework.stereotype.Component;
 
 /**
@@ -59,6 +61,9 @@ public class ObservabilityTools {
 
     static final String INTEGRATION_FAILED = "integration call failed";
     static final String INTEGRATION_HINT = "try a different query or tool";
+
+    /** {@code redaction_status} logged when the call stored no Evidence (rejected, error, no runbook). */
+    static final String REDACTION_NONE = "none";
 
     private static final Logger log = LoggerFactory.getLogger(ObservabilityTools.class);
 
@@ -111,10 +116,10 @@ public class ObservabilityTools {
             Instant observedAt = probe.changePointAt() != null ? probe.changePointAt() : range.end();
             String citation = "PromQL " + query + " [" + range.start() + ", " + range.end() + "] step "
                     + series.step();
-            Evidence ev = evidence.store(ctx, EvidenceType.METRIC, "metrics", observedAt, citation,
+            StoredEvidence ev = evidence.store(ctx, EvidenceType.METRIC, "metrics", observedAt, citation,
                     id -> metricSummarizer.summarize(id, svc, query, range.start(), range.end(), range.clamped(),
                             series));
-            return Outcome.stored(ev.summary(), ev.id());
+            return Outcome.stored(ev.evidence().summary(), List.of(ev));
         });
     }
 
@@ -130,10 +135,10 @@ public class ObservabilityTools {
             Instant observedAt = result.entries().stream().map(LogEntry::at).filter(Objects::nonNull)
                     .min(Instant::compareTo).orElse(range.end());
             String citation = "LogQL " + logql + " [" + range.start() + ", " + range.end() + "]";
-            Evidence ev = evidence.store(ctx, EvidenceType.LOG, "logs", observedAt, citation,
+            StoredEvidence ev = evidence.store(ctx, EvidenceType.LOG, "logs", observedAt, citation,
                     id -> logSummarizer.summarize(id, svc, logql, range.start(), range.end(), range.clamped(),
                             result));
-            return Outcome.stored(ev.summary(), ev.id());
+            return Outcome.stored(ev.evidence().summary(), List.of(ev));
         });
     }
 
@@ -149,9 +154,9 @@ public class ObservabilityTools {
                     .min(Instant::compareTo).orElse(range.end());
             String citation = "traces service=" + svc + " error or duration >= " + limits.slowTraceThreshold()
                     + " [" + range.start() + ", " + range.end() + "]";
-            Evidence ev = evidence.store(ctx, EvidenceType.TRACE, "traces", observedAt, citation,
+            StoredEvidence ev = evidence.store(ctx, EvidenceType.TRACE, "traces", observedAt, citation,
                     id -> traceSummarizer.summarize(id, svc, range.start(), range.end(), range.clamped(), result));
-            return Outcome.stored(ev.summary(), ev.id());
+            return Outcome.stored(ev.evidence().summary(), List.of(ev));
         });
     }
 
@@ -163,23 +168,23 @@ public class ObservabilityTools {
             Lookback lookback = guard.lookback(ctx, lookbackHours);
             List<ChangeRecord> records = InvestigationScope.with(ctx,
                     () -> changes.recentChanges(svc, lookback.since(), lookback.until()));
-            List<String> ids = new ArrayList<>();
+            List<StoredEvidence> storedEvidence = new ArrayList<>();
             List<ChangesSummary.Change> stored = new ArrayList<>();
             for (ChangeRecord record : records) {
                 String citation = record.link() != null && !record.link().isBlank()
                         ? record.link()
                         : "changes service=" + record.service() + " version=" + record.version();
-                Evidence ev = evidence.store(ctx, EvidenceType.DEPLOYMENT, "changes", record.deployedAt(), citation,
-                        id -> ChangesSummary.Change.from(id, record, limits.maxChangedFiles()));
-                ids.add(ev.id());
+                StoredEvidence ev = evidence.store(ctx, EvidenceType.DEPLOYMENT, "changes", record.deployedAt(),
+                        citation, id -> ChangesSummary.Change.from(id, record, limits.maxChangedFiles()));
+                storedEvidence.add(ev);
                 // Rebuilt from the redacted payload, so the model sees what the Redactor let through.
-                stored.add(mapper.convertValue(ev.payload(), ChangesSummary.Change.class));
+                stored.add(mapper.convertValue(ev.evidence().payload(), ChangesSummary.Change.class));
             }
             ChangesSummary summary = new ChangesSummary(svc, lookback.hours(), lookback.since(), lookback.until(),
                     lookback.clamped(), stored);
-            String result = ResultCapper.cap(mapper, summary, ids.isEmpty() ? null : ids.get(0),
-                    limits.maxResultBytes());
-            return Outcome.stored(result, ids.toArray(String[]::new));
+            String firstId = storedEvidence.isEmpty() ? null : storedEvidence.get(0).evidence().id();
+            String result = ResultCapper.cap(mapper, summary, firstId, limits.maxResultBytes());
+            return Outcome.stored(result, storedEvidence);
         });
     }
 
@@ -194,10 +199,10 @@ public class ObservabilityTools {
                 return Outcome.noEvidence(ToolResults.NOT_FOUND);
             }
             RunbookMatch runbook = match.get();
-            Evidence ev = evidence.store(ctx, EvidenceType.RUNBOOK, "runbooks", clock.instant(),
+            StoredEvidence ev = evidence.store(ctx, EvidenceType.RUNBOOK, "runbooks", clock.instant(),
                     "runbooks/" + runbook.fileName(),
                     id -> RunbookSummary.of(id, runbook.title(), runbook.service(), runbook.steps()));
-            return Outcome.stored(ev.summary(), ev.id());
+            return Outcome.stored(ev.evidence().summary(), List.of(ev));
         });
     }
 
@@ -230,20 +235,40 @@ public class ObservabilityTools {
         } catch (ToolRejectedException e) {
             outcome = Outcome.rejected(e.toResult());
         } catch (RuntimeException e) {
-            log.warn("tool call failed tool_name={} incident_id={}", toolName, incidentId, e);
+            log.atWarn().addKeyValue(LogFields.TOOL_NAME, toolName).setCause(e).log("tool call failed");
             outcome = Outcome.failed(ToolResults.error(INTEGRATION_FAILED, INTEGRATION_HINT));
         }
         long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
-        log.info("tool call finished tool_name={} outcome={} duration_ms={} evidence_id={}",
-                toolName, outcome.name, durationMs, String.join(",", outcome.evidenceIds));
+        logFinished(toolName, outcome, durationMs);
         return outcome.result;
     }
 
-    /** Result JSON of one invocation plus what the log line reports. */
-    private record Outcome(String name, String result, List<String> evidenceIds) {
+    /**
+     * The one structured entry per tool call (Req 18.3). It carries names, IDs, the outcome and the
+     * timing only; arguments, results and payloads are never logged (Req 18.5). {@code incident_id}
+     * and {@code trace_id} come from the MDC of the agent thread.
+     */
+    private static void logFinished(String toolName, Outcome outcome, long durationMs) {
+        List<String> ids = outcome.stored.stream().map(s -> s.evidence().id()).toList();
+        String redactionStatus = outcome.stored.isEmpty()
+                ? REDACTION_NONE
+                : String.join(",", outcome.stored.stream().map(StoredEvidence::redactionStatus).distinct().toList());
+        LoggingEventBuilder entry = log.atInfo()
+                .addKeyValue(LogFields.TOOL_NAME, toolName)
+                .addKeyValue(LogFields.OUTCOME, outcome.name)
+                .addKeyValue(LogFields.DURATION_MS, durationMs)
+                .addKeyValue(LogFields.REDACTION_STATUS, redactionStatus);
+        if (!ids.isEmpty()) {
+            entry = entry.addKeyValue(LogFields.EVIDENCE_ID, String.join(",", ids));
+        }
+        entry.log("tool call finished");
+    }
 
-        static Outcome stored(String result, String... evidenceIds) {
-            return new Outcome("success", result, List.of(evidenceIds));
+    /** Result JSON of one invocation plus what the log entry reports. */
+    private record Outcome(String name, String result, List<StoredEvidence> stored) {
+
+        static Outcome stored(String result, List<StoredEvidence> stored) {
+            return new Outcome("success", result, List.copyOf(stored));
         }
 
         static Outcome noEvidence(String result) {

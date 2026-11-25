@@ -59,12 +59,13 @@ public class EvidenceService {
 
     /**
      * Assigns the next Evidence_ID, builds the summary for it, redacts, caps and saves it, and only
-     * then returns (Req 9.1). The returned {@link Evidence#summary()} is the capped Tool_Result.
+     * then returns (Req 9.1). The returned {@link Evidence#summary()} is the capped Tool_Result; the
+     * redaction status is returned alongside for the tool log entry (Req 18.3).
      *
      * @param citation the query or URL that reproduces the result (Req 9.8)
      * @param summaryForId builds the summary for the assigned ID; its {@code evidenceId()} must equal it
      */
-    public Evidence store(InvestigationContext ctx, EvidenceType type, String source, Instant observedAt,
+    public StoredEvidence store(InvestigationContext ctx, EvidenceType type, String source, Instant observedAt,
             String citation, Function<String, ? extends ToolSummary> summaryForId) {
         Objects.requireNonNull(ctx, "ctx");
         return store(ctx.incidentId(), ctx.traceId(), type, source, observedAt, citation, summaryForId);
@@ -81,7 +82,7 @@ public class EvidenceService {
                 ? ALERT_SOURCE + " fingerprint " + incident.fingerprint()
                 : incident.dashboardLinks().get(0);
         return store(incident.id(), traceId, EvidenceType.ALERT, ALERT_SOURCE, incident.detectedAt(), citation,
-                id -> AlertSummary.of(id, incident));
+                id -> AlertSummary.of(id, incident)).evidence();
     }
 
     /** References to the Incident's Evidence in ID order; empty if there is none. */
@@ -96,7 +97,7 @@ public class EvidenceService {
         return "ev-" + incidentId + "-" + n;
     }
 
-    private Evidence store(String incidentId, String traceId, EvidenceType type, String source,
+    private StoredEvidence store(String incidentId, String traceId, EvidenceType type, String source,
             Instant observedAt, String citation, Function<String, ? extends ToolSummary> summaryForId) {
         Objects.requireNonNull(incidentId, "incidentId");
         Objects.requireNonNull(type, "type");
@@ -126,7 +127,7 @@ public class EvidenceService {
         }
         log.debug("evidence stored evidence_id={} type={} source={} redaction_status={} trace_id={}",
                 evidence.id(), type, source, redaction.status(), traceId);
-        return evidence;
+        return new StoredEvidence(evidence, redaction.status());
     }
 
     /** Last assigned number for one incident, guarded by {@link #lock} for writes. */

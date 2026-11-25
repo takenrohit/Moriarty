@@ -9,6 +9,7 @@ import dev.investigator.domain.Investigation;
 import dev.investigator.domain.InvestigationReport;
 import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.evidence.EvidenceService;
+import dev.investigator.logging.LogFields;
 import dev.investigator.report.FallbackReportBuilder;
 import dev.investigator.report.ParseResult;
 import dev.investigator.report.ReportAssembler;
@@ -75,9 +76,6 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class InvestigationOrchestrator {
-
-    static final String MDC_INCIDENT_ID = "incident_id";
-    static final String MDC_TRACE_ID = "trace_id";
 
     static final String DRAFT_INVALID = "the report draft failed validation";
     static final String ROUND_TRIP_LIMIT = "tool-calling limit reached";
@@ -181,8 +179,7 @@ public class InvestigationOrchestrator {
             log.warn("no investigation context; nothing to run incident_id={}", incidentId);
             return;
         }
-        MDC.put(MDC_INCIDENT_ID, incidentId);
-        MDC.put(MDC_TRACE_ID, ctx.traceId());
+        putMdc(ctx);
         try {
             if (!investigations.transition(incidentId, InvestigationStatus.PENDING, InvestigationStatus.RUNNING)) {
                 log.warn("investigation is not PENDING; not running it incident_id={}", incidentId);
@@ -203,8 +200,7 @@ public class InvestigationOrchestrator {
             }
             conclude(ctx, InvestigationStatus.RUNNING, outcome, concluded);
         } finally {
-            MDC.remove(MDC_INCIDENT_ID);
-            MDC.remove(MDC_TRACE_ID);
+            clearMdc();
         }
     }
 
@@ -241,8 +237,7 @@ public class InvestigationOrchestrator {
     private Callable<String> agentCall(InvestigationContext ctx, String incidentJson, AtomicBoolean concluded) {
         String incidentId = ctx.incidentId();
         return () -> {
-            MDC.put(MDC_INCIDENT_ID, incidentId);
-            MDC.put(MDC_TRACE_ID, ctx.traceId());
+            putMdc(ctx);
             try {
                 return agent.investigate(incidentId, incidentJson, PromptInputs.isoInstant(ctx.windowStart()),
                         PromptInputs.isoInstant(ctx.windowEnd()), ctx.alertEvidenceId(), promptInputs.reportSchema());
@@ -254,10 +249,24 @@ public class InvestigationOrchestrator {
                             incidentId);
                     agent.evictChatMemory(incidentId);
                 }
-                MDC.remove(MDC_INCIDENT_ID);
-                MDC.remove(MDC_TRACE_ID);
+                clearMdc();
             }
         };
+    }
+
+    /**
+     * Puts {@code incident_id} and {@code trace_id} in the MDC of the current thread, so every log
+     * entry written on the run thread and the agent thread (tools included) carries them (Req 18.2).
+     */
+    private static void putMdc(InvestigationContext ctx) {
+        MDC.put(LogFields.INCIDENT_ID, ctx.incidentId());
+        MDC.put(LogFields.TRACE_ID, ctx.traceId());
+    }
+
+    /** Removes the investigation fields from the MDC of the current thread. */
+    private static void clearMdc() {
+        MDC.remove(LogFields.INCIDENT_ID);
+        MDC.remove(LogFields.TRACE_ID);
     }
 
     private Outcome outcomeFor(InvestigationContext ctx, AgentResult result) {

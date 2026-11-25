@@ -9,6 +9,11 @@ spring:
   flyway:
     enabled: false            # Flyway on classpath, inactive in Phase 1
 
+logging:
+  structured:
+    format:
+      console: logstash       # one JSON object per line; MDC and SLF4J key-value pairs become fields
+
 management:
   endpoints:
     web:

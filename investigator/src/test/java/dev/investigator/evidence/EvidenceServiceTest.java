@@ -65,7 +65,8 @@ class EvidenceServiceTest {
                 A.minus(Duration.ofMinutes(60)), A.plus(Duration.ofMinutes(10)), Duration.ofMinutes(1), 300);
         Evidence metric = evidenceService.store(context(incident), EvidenceType.METRIC, "prometheus", A,
                 ERROR_RATIO_QUERY, id -> metricSummarizer.summarize(id, "checkout-api", ERROR_RATIO_QUERY,
-                        A.minus(Duration.ofMinutes(60)), A.plus(Duration.ofMinutes(10)), false, series));
+                        A.minus(Duration.ofMinutes(60)), A.plus(Duration.ofMinutes(10)), false, series))
+                .evidence();
 
         assertThat(metric.id()).isEqualTo("ev-" + incident.id() + "-2");
         JsonNode json = mapper.readTree(metric.summary());
@@ -98,8 +99,10 @@ class EvidenceServiceTest {
                 id -> RunbookSummary.of("ev-other-1", "t", "s", List.of())))
                 .isInstanceOf(IllegalStateException.class);
 
-        Evidence next = evidenceService.store(ctx, EvidenceType.RUNBOOK, "runbooks", A, "runbooks/x.md",
+        StoredEvidence stored = evidenceService.store(ctx, EvidenceType.RUNBOOK, "runbooks", A, "runbooks/x.md",
                 id -> RunbookSummary.of(id, "Payment gateway degradation", "payment-gateway", List.of("Check")));
+        Evidence next = stored.evidence();
+        assertThat(stored.redactionStatus()).isEqualTo(RedactionResult.NOT_APPLIED);
         assertThat(next.id()).isEqualTo("ev-" + incident.id() + "-2");
         assertThat(repository.findByIncident(incident.id())).hasSize(2);
     }
