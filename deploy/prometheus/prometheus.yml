@@ -1,8 +1,12 @@
 # Prometheus v3.16 configuration for the local Compose stack.
-# Mounted read-only at /etc/prometheus. Alert rules are added under rules/ (plan 2.3).
+# Mounted read-only at /etc/prometheus (the whole directory, so rules/ is mounted too).
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+
+# Alert rules (plan 2.3): HighErrorRate on the checkout-api 5xx ratio.
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 alerting:
   alertmanagers:

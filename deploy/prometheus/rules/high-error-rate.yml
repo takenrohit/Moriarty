@@ -1,0 +1,22 @@
+# Alert rules for the demo scenario (plan 2.3, Req 8.1).
+# The metric comes from the mock services' /actuator/prometheus scrape (CP-59). Actuator requests
+# (scrapes, health checks) are excluded so they do not dilute the checkout error ratio.
+# The rule's labels carry the service and severity the investigator's Alertmanager normalizer reads.
+groups:
+  - name: checkout-api
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_server_requests_seconds_count{service="checkout-api", status=~"5..", uri!~"/actuator.*"}[2m]))
+            /
+          sum(rate(http_server_requests_seconds_count{service="checkout-api", uri!~"/actuator.*"}[2m]))
+            > 0.05
+        for: 1m
+        labels:
+          severity: critical
+          service: checkout-api
+        annotations:
+          summary: "checkout-api 5xx error ratio above 5%"
+          description: "{{ $value | humanizePercentage }} of checkout-api requests returned 5xx over the last 2 minutes."
+          # Absolute http(s) annotation values become Incident dashboard links.
+          dashboard_url: "http://localhost:3000/explore"
