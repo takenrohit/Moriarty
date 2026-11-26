@@ -27,6 +27,6 @@ public class GrafanaController {
     @PostMapping(path = "/api/v1/alerts/grafana",
             consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<WebhookAcceptedResponse> receive(@RequestBody GrafanaPayload payload) {
-        return ResponseEntity.accepted().body(intake.acceptAll(normalizer.normalize(payload)));
+        return ResponseEntity.accepted().body(intake.acceptAll("grafana", payload, normalizer.normalize(payload)));
     }
 }

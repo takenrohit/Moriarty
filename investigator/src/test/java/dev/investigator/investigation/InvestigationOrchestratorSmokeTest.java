@@ -4,6 +4,7 @@ import static dev.investigator.testsupport.ScriptedChatModel.finalAnswer;
 import static dev.investigator.testsupport.ScriptedChatModel.toolCall;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.investigator.audit.NoOpAuditService;
 import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.domain.ActionType;
 import dev.investigator.domain.Evidence;
@@ -221,7 +222,7 @@ class InvestigationOrchestratorSmokeTest {
                 properties.tools(), properties.agent(), properties.services(), properties.mock());
         InvestigationOrchestrator shortOrchestrator = new InvestigationOrchestrator(investigations, incidents, reports,
                 evidenceRepository, evidenceService, contexts, blockingAgent, promptInputs, parser, validator,
-                assembler, fallback, publisher, shortTimeout, clock);
+                assembler, fallback, publisher, shortTimeout, clock, new NoOpAuditService());
         try {
             Incident incident = newIncident();
             long started = System.nanoTime();

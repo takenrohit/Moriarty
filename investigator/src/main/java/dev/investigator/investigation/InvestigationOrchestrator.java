@@ -1,5 +1,6 @@
 package dev.investigator.investigation;
 
+import dev.investigator.audit.AuditService;
 import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.domain.Evidence;
 import dev.investigator.domain.Incident;
@@ -69,7 +70,8 @@ import org.springframework.stereotype.Component;
  * <p>The terminal status is set with a compare-and-set {@link InvestigationRepository#transition}; only
  * the caller that wins it removes the context, stores the report ({@link ReportRepository#saveIfAbsent}),
  * sets the Incident to {@code REPORTED}, writes the report to the log ({@link ReportPublisher}) and
- * evicts the chat memory. The {@code accepting} flag is true only between the {@code RUNNING}
+ * evicts the chat memory. A report that is not stored because one already exists is kept as a distinct
+ * audit row ({@link AuditService#recordReport}, Req 12.7). The {@code accepting} flag is true only between the {@code RUNNING}
  * transition and the end of the agent call, so the {@code ToolGuard} refuses tool calls in every
  * other state (Req 11.13). An agent that returns
  * after the investigation ended has its result discarded with a warning (Req 14.10).
@@ -106,6 +108,7 @@ public class InvestigationOrchestrator {
     private final ReportPublisher publisher;
     private final InvestigatorProperties properties;
     private final Clock clock;
+    private final AuditService audit;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public InvestigationOrchestrator(InvestigationRepository investigations, IncidentRepository incidents,
@@ -113,7 +116,7 @@ public class InvestigationOrchestrator {
             InvestigationContextRegistry contexts, InvestigatorAgent agent, PromptInputs promptInputs,
             ReportDraftParser parser, ReportValidator validator, ReportAssembler assembler,
             FallbackReportBuilder fallback, ReportPublisher publisher, InvestigatorProperties properties,
-            Clock clock) {
+            Clock clock, AuditService audit) {
         this.investigations = investigations;
         this.incidents = incidents;
         this.reports = reports;
@@ -129,6 +132,7 @@ public class InvestigationOrchestrator {
         this.publisher = publisher;
         this.properties = properties;
         this.clock = clock;
+        this.audit = audit;
     }
 
     /**
@@ -372,6 +376,7 @@ public class InvestigationOrchestrator {
         boolean stored = reports.saveIfAbsent(outcome.report());
         if (!stored) {
             log.warn("a report is already stored; keeping it incident_id={}", incidentId);
+            audit.recordReport(outcome.report());
         }
         incidents.updateStatus(incidentId, IncidentStatus.REPORTED);
         if (stored) {
@@ -394,6 +399,9 @@ public class InvestigationOrchestrator {
             InvestigationReport report = fallbackReport(incidentId, incident.affectedService(),
                     InvestigationStatus.FAILED, reason, List.of());
             boolean stored = reports.saveIfAbsent(report);
+            if (!stored) {
+                audit.recordReport(report);
+            }
             incidents.updateStatus(incidentId, IncidentStatus.REPORTED);
             if (stored) {
                 publish(incidentId, report);

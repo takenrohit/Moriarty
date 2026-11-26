@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.investigator.audit.NoOpAuditService;
 import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.domain.Evidence;
 import dev.investigator.domain.EvidenceType;
@@ -215,7 +216,7 @@ class ObservabilityToolsSmokeTest {
         };
         ObservabilityTools withFailingLogs = new ObservabilityTools(guard, evidenceService, metrics, failing,
                 traces, changes, runbooks, metricSummarizer, logSummarizer, traceSummarizer, mapper, properties,
-                clock);
+                clock, new NoOpAuditService());
 
         JsonNode json = mapper.readTree(withFailingLogs.searchLogs(incidentId, "checkout-api", "x", START, END));
 
@@ -235,7 +236,7 @@ class ObservabilityToolsSmokeTest {
         ObservabilityTools withPrometheus = new ObservabilityTools(guard, evidenceService, prometheus,
                 (service, logql, start, end, limit) -> { throw new AssertionError("not called"); },
                 traces, changes, runbooks, metricSummarizer, logSummarizer, traceSummarizer, mapper, properties,
-                clock);
+                clock, new NoOpAuditService());
 
         JsonNode json = mapper.readTree(withPrometheus.getMetric(incidentId, "checkout-api",
                 "http_server_requests_seconds_count{service=\"checkout-api\"}", START, END));

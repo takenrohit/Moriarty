@@ -1,6 +1,7 @@
 package dev.investigator.tools;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.investigator.audit.AuditService;
 import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.domain.EvidenceType;
 import dev.investigator.evidence.ChangesSummary;
@@ -35,7 +36,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
@@ -81,12 +84,13 @@ public class ObservabilityTools {
     private final ObjectMapper mapper;
     private final InvestigatorProperties.Tools limits;
     private final Clock clock;
+    private final AuditService audit;
 
     public ObservabilityTools(ToolGuard guard, EvidenceService evidence,
             MetricsClient metrics, LogClient logs, TraceClient traces, ChangeClient changes,
             RunbookCatalog runbooks, MetricSummarizer metricSummarizer, LogSummarizer logSummarizer,
             TraceSummarizer traceSummarizer, ObjectMapper mapper, InvestigatorProperties properties,
-            Clock clock) {
+            Clock clock, AuditService audit) {
         this.guard = guard;
         this.evidence = evidence;
         this.metrics = metrics;
@@ -100,6 +104,7 @@ public class ObservabilityTools {
         this.mapper = mapper;
         this.limits = properties.tools();
         this.clock = clock;
+        this.audit = audit;
     }
 
     @Tool("Query a metric time series for one service. start/end are ISO-8601 instants, e.g. 2026-11-23T14:00:00Z."
@@ -108,7 +113,7 @@ public class ObservabilityTools {
             + " / sum(rate(http_server_requests_seconds_count{service=\"checkout-api\"}[5m])).")
     public String getMetric(@ToolMemoryId String incidentId, @P("service") String service,
             @P("PromQL query") String promql, @P("start") String start, @P("end") String end) {
-        return invoke("getMetric", incidentId, ctx -> {
+        return invoke("getMetric", incidentId, args("service", service, "promql", promql, "start", start, "end", end), ctx -> {
             String svc = guard.requireAllowedService(service);
             String query = guard.requireQuery(promql);
             TimeRange range = guard.clampToWindow(ctx, start, end);
@@ -130,7 +135,7 @@ public class ObservabilityTools {
     @Tool("Search logs for one service with a LogQL query. Returns counts and the top distinct messages.")
     public String searchLogs(@ToolMemoryId String incidentId, @P("service") String service,
             @P("LogQL query") String query, @P("start") String start, @P("end") String end) {
-        return invoke("searchLogs", incidentId, ctx -> {
+        return invoke("searchLogs", incidentId, args("service", service, "query", query, "start", start, "end", end), ctx -> {
             String svc = guard.requireAllowedService(service);
             String logql = guard.requireQuery(query);
             TimeRange range = guard.clampToWindow(ctx, start, end);
@@ -149,7 +154,7 @@ public class ObservabilityTools {
     @Tool("Find error and slow traces for one service. Returns failing spans and example trace IDs.")
     public String findProblemTraces(@ToolMemoryId String incidentId, @P("service") String service,
             @P("start") String start, @P("end") String end) {
-        return invoke("findProblemTraces", incidentId, ctx -> {
+        return invoke("findProblemTraces", incidentId, args("service", service, "start", start, "end", end), ctx -> {
             String svc = guard.requireAllowedService(service);
             TimeRange range = guard.clampToWindow(ctx, start, end);
             TraceSearchResult result = InvestigationScope.with(ctx, () -> traces.findProblemTraces(svc,
@@ -167,7 +172,7 @@ public class ObservabilityTools {
     @Tool("List deployments and changes for one service in the last lookbackHours (max 24).")
     public String getRecentChanges(@ToolMemoryId String incidentId, @P("service") String service,
             @P("lookbackHours") int lookbackHours) {
-        return invoke("getRecentChanges", incidentId, ctx -> {
+        return invoke("getRecentChanges", incidentId, args("service", service, "lookbackHours", lookbackHours), ctx -> {
             String svc = guard.requireAllowedService(service);
             Lookback lookback = guard.lookback(ctx, lookbackHours);
             List<ChangeRecord> records = InvestigationScope.with(ctx,
@@ -195,7 +200,7 @@ public class ObservabilityTools {
     @Tool("Find the most relevant runbook for a service and symptom.")
     public String findRunbook(@ToolMemoryId String incidentId, @P("service") String service,
             @P("symptom") String symptom) {
-        return invoke("findRunbook", incidentId, ctx -> {
+        return invoke("findRunbook", incidentId, args("service", service, "symptom", symptom), ctx -> {
             String svc = guard.requireAllowedService(service);
             String text = guard.requireSymptom(symptom);
             Optional<RunbookMatch> match = runbooks.bestMatch(svc, text);
@@ -229,8 +234,12 @@ public class ObservabilityTools {
         return step.compareTo(minStep) >= 0 ? step : minStep;
     }
 
-    /** Shared wrapper: guard first (counts every invocation), then the body, then one log line. */
-    private String invoke(String toolName, String incidentId, Function<InvestigationContext, Outcome> body) {
+    /**
+     * Shared wrapper: guard first (counts every invocation), then the body, then one log line and one audit
+     * row (Req 12.5). The audit row holds the arguments; the log line never does (Req 18.5).
+     */
+    private String invoke(String toolName, String incidentId, Map<String, Object> args,
+            Function<InvestigationContext, Outcome> body) {
         long started = System.nanoTime();
         Outcome outcome;
         try {
@@ -248,7 +257,19 @@ public class ObservabilityTools {
         }
         long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
         logFinished(toolName, outcome, durationMs);
+        audit.recordToolCall(new AuditService.ToolCall(incidentId, toolName, args, outcome.name, durationMs,
+                outcome.stored.stream().map(s -> s.evidence().id()).toList(),
+                "success".equals(outcome.name) ? null : outcome.result));
         return outcome.result;
+    }
+
+    /** Tool arguments in declaration order; values may be null. */
+    private static Map<String, Object> args(Object... namesAndValues) {
+        Map<String, Object> args = new LinkedHashMap<>();
+        for (int i = 0; i < namesAndValues.length; i += 2) {
+            args.put((String) namesAndValues[i], namesAndValues[i + 1]);
+        }
+        return args;
     }
 
     /**
