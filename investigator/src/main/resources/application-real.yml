@@ -26,3 +26,12 @@ investigator:
       password: ${TEMPO_PASSWORD:}
       connect-timeout: ${TEMPO_CONNECT_TIMEOUT:2s}
       read-timeout: ${TEMPO_READ_TIMEOUT:10s}
+    changes:
+      # GitHub REST API; Compose defaults GITHUB_API_URL to the Fake GitHub (CP-46). Real GitHub:
+      # https://api.github.com with GITHUB_REPOSITORY and a read-only GITHUB_TOKEN.
+      base-url: ${GITHUB_API_URL:}
+      bearer-token: ${GITHUB_TOKEN:}
+      connect-timeout: ${GITHUB_CONNECT_TIMEOUT:2s}
+      read-timeout: ${GITHUB_READ_TIMEOUT:10s}
+      # owner/repo whose deployments are read; required when base-url is set.
+      repository: ${GITHUB_REPOSITORY:}
