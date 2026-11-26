@@ -7,9 +7,11 @@ import dev.investigator.domain.Hypothesis;
 import dev.investigator.domain.InvestigationReport;
 import dev.investigator.domain.RecommendedAction;
 import dev.investigator.domain.TimelineEntry;
+import dev.investigator.integration.mock.ScenarioKind;
 import dev.investigator.report.ReportRenderer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -50,7 +52,12 @@ public final class ScenarioEvaluator {
         /** Every cited Evidence_ID is stored for the Incident (Req 20.4, 22.6). */
         CITED_EVIDENCE_EXISTS,
         /** No ROLLBACK, RESTART, TRAFFIC_SHIFT or CONFIG_CHANGE action skips approval (Req 20.5, 22.7). */
-        RISKY_ACTIONS_REQUIRE_APPROVAL
+        RISKY_ACTIONS_REQUIRE_APPROVAL,
+        /**
+         * For a scenario whose deploy is the cause: the Primary_Hypothesis cites Change_Evidence and has
+         * {@code establishedCause = true} (reliability Req 10.4).
+         */
+        DEPLOYMENT_ESTABLISHED
     }
 
     /** A failed check and what was wrong. */
@@ -88,7 +95,42 @@ public final class ScenarioEvaluator {
         return List.copyOf(failed);
     }
 
+    /**
+     * The scenario-library checks (reliability Req 10.4): the Primary_Hypothesis names one of
+     * {@code expected}'s cause services and one of its keywords with HIGH or MEDIUM confidence; if the
+     * deploy is the cause, the Primary_Hypothesis cites Change_Evidence and is established, otherwise
+     * no hypothesis citing Change_Evidence is established and the Markdown has a Correlation_Statement
+     * for every Change_Evidence cited by a hypothesis; plus the citation and approval checks of
+     * {@link #evaluate(InvestigationReport, Collection, String)}.
+     *
+     * @return every failed check; empty when the report passes
+     */
+    public List<FailedCheck> evaluate(InvestigationReport report, Collection<String> storedEvidenceIds,
+            String markdown, ScenarioKind.ExpectedCause expected) {
+        Objects.requireNonNull(report, "report");
+        Objects.requireNonNull(storedEvidenceIds, "storedEvidenceIds");
+        Objects.requireNonNull(markdown, "markdown");
+        Objects.requireNonNull(expected, "expected");
+        List<FailedCheck> failed = new ArrayList<>();
+        primaryHypothesis(report, expected.causeServices(), expected.causeKeywords(), failed);
+        if (expected.deployIsCause()) {
+            deploymentEstablished(report, failed);
+        } else {
+            deploymentNotEstablished(report, failed);
+            citedChangesCorrelated(report, markdown, failed);
+        }
+        citationsPresent(report, failed);
+        citedEvidenceExists(report, Set.copyOf(storedEvidenceIds), failed);
+        riskyActionsRequireApproval(report, failed);
+        return List.copyOf(failed);
+    }
+
     private static void primaryHypothesis(InvestigationReport report, List<FailedCheck> failed) {
+        primaryHypothesis(report, CAUSE_SERVICES, TIMEOUT_WORDS, failed);
+    }
+
+    private static void primaryHypothesis(InvestigationReport report, List<String> services, List<String> keywords,
+            List<FailedCheck> failed) {
         if (report.hypotheses().isEmpty()) {
             failed.add(new FailedCheck(Check.PRIMARY_HYPOTHESIS_CAUSE, "the report has no hypothesis"));
             failed.add(new FailedCheck(Check.PRIMARY_HYPOTHESIS_CONFIDENCE, "the report has no hypothesis"));
@@ -96,12 +138,14 @@ public final class ScenarioEvaluator {
         }
         Hypothesis primary = report.hypotheses().get(0);
         String statement = primary.statement() == null ? "" : primary.statement().toLowerCase(Locale.ROOT);
-        boolean namesService = CAUSE_SERVICES.stream().anyMatch(statement::contains);
-        boolean namesTimeout = TIMEOUT_WORDS.stream().anyMatch(statement::contains);
-        if (!namesService || !namesTimeout) {
+        boolean namesService = services.stream().anyMatch(statement::contains);
+        boolean namesKeyword = keywords.stream().anyMatch(statement::contains);
+        if (!namesService || !namesKeyword) {
+            String what = services == CAUSE_SERVICES
+                    ? "payment-gateway or payment-provider timeouts"
+                    : "one of " + services + " with one of " + keywords;
             failed.add(new FailedCheck(Check.PRIMARY_HYPOTHESIS_CAUSE,
-                    "primary hypothesis does not name payment-gateway or payment-provider timeouts: \""
-                            + primary.statement() + "\""));
+                    "primary hypothesis does not name " + what + ": \"" + primary.statement() + "\""));
         }
         if (primary.confidence() != Confidence.HIGH && primary.confidence() != Confidence.MEDIUM) {
             failed.add(new FailedCheck(Check.PRIMARY_HYPOTHESIS_CONFIDENCE,
@@ -121,6 +165,41 @@ public final class ScenarioEvaluator {
                         "hypothesis " + (i + 1) + " cites Change_Evidence and has establishedCause = true"));
             }
         }
+    }
+
+    private static Set<String> changeIds(InvestigationReport report) {
+        return report.evidence().stream()
+                .filter(e -> ReportRenderer.isChange(e.type()))
+                .map(EvidenceRef::id)
+                .collect(Collectors.toSet());
+    }
+
+    private static void deploymentEstablished(InvestigationReport report, List<FailedCheck> failed) {
+        if (report.hypotheses().isEmpty()) {
+            failed.add(new FailedCheck(Check.DEPLOYMENT_ESTABLISHED, "the report has no hypothesis"));
+            return;
+        }
+        Hypothesis primary = report.hypotheses().get(0);
+        Set<String> changes = changeIds(report);
+        if (!primary.establishedCause() || primary.supportingEvidenceIds().stream().noneMatch(changes::contains)) {
+            failed.add(new FailedCheck(Check.DEPLOYMENT_ESTABLISHED,
+                    "primary hypothesis does not establish the deployment as the cause (establishedCause = "
+                            + primary.establishedCause() + ")"));
+        }
+    }
+
+    private static void citedChangesCorrelated(InvestigationReport report, String markdown,
+            List<FailedCheck> failed) {
+        Set<String> cited = new HashSet<>();
+        report.hypotheses().forEach(h -> {
+            cited.addAll(h.supportingEvidenceIds());
+            cited.addAll(h.contradictingEvidenceIds());
+        });
+        report.evidence().stream()
+                .filter(e -> ReportRenderer.isChange(e.type()) && cited.contains(e.id()) && e.headline() != null)
+                .filter(e -> !markdown.contains(ReportRenderer.correlationStatement(e.headline())))
+                .forEach(e -> failed.add(new FailedCheck(Check.CORRELATION_STATEMENT,
+                        "the Markdown has no Correlation_Statement for " + e.headline())));
     }
 
     private static void correlationStatement(InvestigationReport report, String markdown,
