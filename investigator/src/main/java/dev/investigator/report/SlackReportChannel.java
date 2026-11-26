@@ -5,10 +5,12 @@ import dev.investigator.config.SlackProperties;
 import dev.investigator.domain.InvestigationReport;
 import java.net.http.HttpClient;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionMessage;
 import org.springframework.boot.autoconfigure.condition.ConditionOutcome;
@@ -39,6 +41,9 @@ import org.springframework.web.util.UriComponentsBuilder;
  * <p>Slack reports most errors as HTTP 200 with {@code "ok": false}; this and any HTTP or I/O failure
  * throws a {@link SlackPublishException} whose message holds only the Slack error code, HTTP status or
  * exception type, never the token or the request (Req 13.4, 13.6). {@link ReportPublisher} logs it.
+ *
+ * <p>When the {@link ApprovalService} exists (same condition), each Approvable_Action first gets a
+ * {@code PENDING} approval, and the message carries its Approve/Reject buttons (Req 7.1).
  */
 @Component
 @Order(100)
@@ -53,11 +58,14 @@ public class SlackReportChannel implements ReportChannel {
     private final SlackBlockKitRenderer renderer;
     private final String publicBaseUrl;
     private final RestClient client;
+    private final ApprovalService approvals;
 
     public SlackReportChannel(SlackProperties properties, SlackBlockKitRenderer renderer,
-            @Value("${investigator.public-base-url:http://localhost:8080}") String publicBaseUrl) {
+            @Value("${investigator.public-base-url:http://localhost:8080}") String publicBaseUrl,
+            ObjectProvider<ApprovalService> approvals) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.renderer = Objects.requireNonNull(renderer, "renderer");
+        this.approvals = approvals.getIfAvailable();
         this.publicBaseUrl = publicBaseUrl == null ? "" : publicBaseUrl.strip();
         if (!properties.configured()) {
             throw new IllegalStateException(SlackProperties.BOT_TOKEN_PROPERTY + " and "
@@ -84,7 +92,8 @@ public class SlackReportChannel implements ReportChannel {
 
     @Override
     public void publish(InvestigationReport report, ReportView view) {
-        SlackBlockKitRenderer.SlackMessage message = renderer.render(view, reportUrl(view.incidentId()));
+        List<Approval> pending = approvals == null ? List.of() : approvals.request(report);
+        SlackBlockKitRenderer.SlackMessage message = renderer.render(view, reportUrl(view.incidentId()), pending);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("channel", properties.channelId().strip());
         body.put("text", message.text());
@@ -111,7 +120,8 @@ public class SlackReportChannel implements ReportChannel {
             String error = response == null ? "empty_response" : errorCode(response.path("error").asText(""));
             throw new SlackPublishException("chat.postMessage returned ok=false error=" + error);
         }
-        log.info("report posted to Slack incident_id={} blocks={}", report.incidentId(), message.blocks().size());
+        log.info("report posted to Slack incident_id={} blocks={} approvals={}", report.incidentId(),
+                message.blocks().size(), pending.size());
     }
 
     /** Absolute URL of the report page, or {@code null} when the public base URL is not an http(s) URL. */

@@ -12,7 +12,8 @@ import org.springframework.stereotype.Component;
  *
  * <p>Layout: a header (title and status), a fields section (incident, service, severity, status,
  * detection time), then one section each for the summary, hypotheses, timeline, recommended actions
- * (with their approval markers), open questions and evidence, and a "View report" link button.
+ * (with their approval markers), open questions and evidence, then one approval section with
+ * Approve/Reject buttons per pending {@link Approval}, and a "View report" link button.
  * Every Evidence_ID the Markdown cites (hypotheses, timeline, actions, evidence list) is written as
  * {@code `id`} (Req 13.7).
  *
@@ -35,6 +36,10 @@ public class SlackBlockKitRenderer {
     static final int FIRST_ITEM_LIMIT = 500;
     static final String ELLIPSIS = "…";
     static final String TRUNCATED_NOTICE = "_Report truncated for Slack; open the full report for the rest._";
+    /** {@code action_id} of the Approve button; its {@code value} is the approval ID. */
+    public static final String APPROVE_ACTION_ID = "approval_approve";
+    /** {@code action_id} of the Reject button; its {@code value} is the approval ID. */
+    public static final String REJECT_ACTION_ID = "approval_reject";
 
     private static final int[] ITEM_LIMITS = {FIRST_ITEM_LIMIT, 150, 40};
     private static final int SUMMARY_LIMIT = 2800;
@@ -58,18 +63,32 @@ public class SlackBlockKitRenderer {
      * @param reportUrl absolute URL of the report page for the "View report" button, or {@code null} for none
      */
     public SlackMessage render(ReportView view, String reportUrl) {
+        return render(view, reportUrl, List.of());
+    }
+
+    /**
+     * Renders the message with, after the report, an approval section and Approve/Reject buttons
+     * ({@code action_id} {@value #APPROVE_ACTION_ID}/{@value #REJECT_ACTION_ID}, {@code value} the approval
+     * ID) for each pending approval (Req 7.1). The approval blocks and the link button are never truncated.
+     */
+    public SlackMessage render(ReportView view, String reportUrl, List<Approval> approvals) {
+        List<Map<String, Object>> tail = new ArrayList<>();
+        approvals.forEach(a -> tail.addAll(approvalBlocks(a)));
+        if (reportUrl != null) {
+            tail.add(button(reportUrl));
+        }
         List<Map<String, Object>> blocks = List.of();
         for (int limit : ITEM_LIMITS) {
-            blocks = build(view, reportUrl, limit);
-            if (blocks.size() <= MAX_BLOCKS) {
-                return new SlackMessage(fallbackText(view), blocks);
+            blocks = build(view, limit);
+            if (blocks.size() + tail.size() <= MAX_BLOCKS) {
+                List<Map<String, Object>> all = new ArrayList<>(blocks);
+                all.addAll(tail);
+                return new SlackMessage(fallbackText(view), all);
             }
         }
-        List<Map<String, Object>> kept = new ArrayList<>(blocks.subList(0, MAX_BLOCKS - (reportUrl == null ? 1 : 2)));
+        List<Map<String, Object>> kept = new ArrayList<>(blocks.subList(0, MAX_BLOCKS - tail.size() - 1));
         kept.add(section(TRUNCATED_NOTICE));
-        if (reportUrl != null) {
-            kept.add(button(reportUrl));
-        }
+        kept.addAll(tail);
         return new SlackMessage(fallbackText(view), kept);
     }
 
@@ -90,7 +109,7 @@ public class SlackBlockKitRenderer {
         return text.substring(0, Math.max(end, 0)) + ELLIPSIS;
     }
 
-    private List<Map<String, Object>> build(ReportView v, String reportUrl, int limit) {
+    private List<Map<String, Object>> build(ReportView v, int limit) {
         List<Map<String, Object>> blocks = new ArrayList<>();
         blocks.add(header(v));
         blocks.add(fields(v));
@@ -102,10 +121,31 @@ public class SlackBlockKitRenderer {
         sections(blocks, "Open questions",
                 v.openQuestions().stream().map(q -> "• " + escape(cut(q, limit))).toList());
         sections(blocks, "Evidence", evidence(v, limit));
-        if (reportUrl != null) {
-            blocks.add(button(reportUrl));
-        }
         return blocks;
+    }
+
+    /** A section naming the action and an actions block with its Approve and Reject buttons. */
+    private static List<Map<String, Object>> approvalBlocks(Approval approval) {
+        String text = "*Approval requested* `" + escape(approval.id()) + "`\n"
+                + escape(cut(approval.action() == null ? "" : approval.action(), FIRST_ITEM_LIMIT))
+                + "\n_Recording a decision does not run the action._";
+        Map<String, Object> actions = new LinkedHashMap<>();
+        actions.put("type", "actions");
+        actions.put("block_id", "approval-" + approval.id());
+        actions.put("elements", List.of(
+                approvalButton("Approve", APPROVE_ACTION_ID, approval.id(), "primary"),
+                approvalButton("Reject", REJECT_ACTION_ID, approval.id(), "danger")));
+        return List.of(section(text), actions);
+    }
+
+    private static Map<String, Object> approvalButton(String label, String actionId, String value, String style) {
+        Map<String, Object> button = new LinkedHashMap<>();
+        button.put("type", "button");
+        button.put("text", plainText(label));
+        button.put("action_id", actionId);
+        button.put("value", value);
+        button.put("style", style);
+        return button;
     }
 
     private static List<String> hypotheses(ReportView v, int limit) {

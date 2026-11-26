@@ -85,7 +85,7 @@ class PostgresPersistenceIT {
     @Test
     void flywayMigratedAndTheAppConnectsAsTheNonOwnerRole() {
         assertThat(flyway.info().applied()).extracting(MigrationInfo::getVersion)
-                .extracting(Object::toString).containsExactly("1", "2", "3");
+                .extracting(Object::toString).containsExactly("1", "2", "3", "4");
         assertThat(jdbc.sql("SELECT current_user").query(String.class).single()).isEqualTo(PostgresContainers.APP_ROLE);
         assertThat(jdbc.sql("SELECT rolsuper FROM pg_roles WHERE rolname = current_user").query(Boolean.class)
                 .single()).isFalse();
