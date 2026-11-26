@@ -22,6 +22,8 @@ import dev.investigator.investigation.InvestigationContext;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -39,6 +41,9 @@ class ReportValidatorTest {
     private static final String OTHER = "inc-ffffffffffff";
     private static final Instant DETECTED = Instant.parse("2026-11-23T14:40:00Z");
     private static final Instant NOW = Instant.parse("2026-11-23T14:43:00Z");
+    /** Evidence stored for {@link #INC}: ev-1 to ev-50, enough for every draft below. */
+    private static final Set<String> KNOWN =
+            IntStream.rangeClosed(1, 50).mapToObj(ReportValidatorTest::id).collect(Collectors.toUnmodifiableSet());
 
     private final ReportDraftParser parser = new ReportDraftParser();
     private final ReportDraftPrinter printer = new ReportDraftPrinter();
@@ -93,11 +98,11 @@ class ReportValidatorTest {
     void expectedDemoReportPassesParserValidatorAndFinalCheck() {
         ReportDraft draft = parseOk(DEMO_DRAFT);
 
-        assertThat(validator.validateDraft(draft, INC).violations()).isEmpty();
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations()).isEmpty();
 
         InvestigationReport report = assembler.assemble(draft, context(), InvestigationStatus.COMPLETED, List.of(),
                 List.of(), NOW);
-        assertThat(validator.validateReport(report).violations()).isEmpty();
+        assertThat(validator.validateReport(report, KNOWN).violations()).isEmpty();
         assertThat(report.actions())
                 .filteredOn(a -> a.type() == ActionType.ROLLBACK || a.type() == ActionType.RESTART)
                 .hasSize(2)
@@ -125,7 +130,7 @@ class ReportValidatorTest {
         ReportDraft draft = draft(OTHER, List.of(timeline(id(1))), List.of(hypothesis(List.of(id(1)), List.of())),
                 List.of(action(1, id(1))));
 
-        assertThat(validator.validateDraft(draft, INC).violations())
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations())
                 .containsExactly("$.incidentId: must be the investigation's incident ID " + INC);
     }
 
@@ -134,7 +139,7 @@ class ReportValidatorTest {
         ReportDraft draft = draft(INC, List.of(timeline(id(1)), timeline()),
                 List.of(hypothesis(List.of(id(1)), List.of())), List.of());
 
-        assertThat(validator.validateDraft(draft, INC).violations())
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations())
                 .containsExactly("$.timeline[1].evidenceIds: " + ReportValidator.TIMELINE_UNCITED);
     }
 
@@ -143,7 +148,7 @@ class ReportValidatorTest {
         ReportDraft draft = draft(INC, List.of(timeline(id(1))), List.of(hypothesis(List.of(), List.of(id(2)))),
                 List.of());
 
-        assertThat(validator.validateDraft(draft, INC).violations())
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations())
                 .containsExactly("$.hypotheses[0].supportingEvidenceIds: " + ReportValidator.HYPOTHESIS_UNCITED);
     }
 
@@ -153,7 +158,7 @@ class ReportValidatorTest {
         ReportDraft draft = draft(INC, List.of(timeline(id(1))), List.of(hypothesis(List.of(id(1), cited), List.of())),
                 List.of());
 
-        assertThat(validator.validateDraft(draft, INC).violations()).singleElement()
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations()).singleElement()
                 .isEqualTo("$.hypotheses[0].supportingEvidenceIds[1]: is not an evidence ID of incident " + INC
                         + " (expected ev-" + INC + "-<n>)")
                 .satisfies(v -> assertThat(v).doesNotContain(cited));
@@ -163,7 +168,7 @@ class ReportValidatorTest {
     void anActionMayCiteNoEvidence() {
         ReportDraft draft = draft(INC, List.of(timeline(id(1))), List.of(), List.of(action(1)));
 
-        assertThat(validator.validateDraft(draft, INC).valid()).isTrue();
+        assertThat(validator.validateDraft(draft, INC, KNOWN).valid()).isTrue();
     }
 
     // --- every violation reported -------------------------------------------------------------------
@@ -175,7 +180,7 @@ class ReportValidatorTest {
                 List.of(action(1, id(1), "ev-" + INC + "-0")));
 
         String wrongId = ": is not an evidence ID of incident " + INC + " (expected ev-" + INC + "-<n>)";
-        assertThat(validator.validateDraft(draft, INC).violations()).containsExactlyInAnyOrder(
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations()).containsExactlyInAnyOrder(
                 "$.incidentId: must be the investigation's incident ID " + INC,
                 "$.timeline[1].evidenceIds: " + ReportValidator.TIMELINE_UNCITED,
                 "$.hypotheses[0].supportingEvidenceIds: " + ReportValidator.HYPOTHESIS_UNCITED,
@@ -191,7 +196,7 @@ class ReportValidatorTest {
                 List.of(new RecommendedAction(1, ActionType.ROLLBACK, "roll back", false, List.of(id(1)))),
                 Collections.nCopies(ReportValidator.MAX_REPORT_OPEN_QUESTIONS + 1, "q"), List.of(), null);
 
-        assertThat(validator.validateReport(report).violations()).containsExactlyInAnyOrder(
+        assertThat(validator.validateReport(report, KNOWN).violations()).containsExactlyInAnyOrder(
                 "$.status: must be COMPLETED, INCONCLUSIVE or FAILED",
                 "$.summary: is required",
                 "$.generatedAt: is required",
@@ -210,7 +215,7 @@ class ReportValidatorTest {
                 new IncidentTimeline(List.of(new TimelineEntry(DETECTED, "d", List.of(id(1))))), List.of(), List.of(),
                 Collections.nCopies(ReportValidator.MAX_REPORT_OPEN_QUESTIONS, "q"), List.of(), NOW);
 
-        assertThat(validator.validateReport(report).valid()).isTrue();
+        assertThat(validator.validateReport(report, KNOWN).valid()).isTrue();
     }
 
     // --- schema checks in the parser ----------------------------------------------------------------
@@ -227,7 +232,7 @@ class ReportValidatorTest {
     @CsvSource({"timeline, 50", "hypotheses, 5", "actions, 10", "openQuestions, 10"})
     void listLimitsAcceptNAndRejectNPlusOne(String field, int limit) {
         ReportDraft atLimit = draftWithListSize(field, limit);
-        assertThat(validator.validateDraft(parseOk(printer.print(atLimit)), INC).valid()).isTrue();
+        assertThat(validator.validateDraft(parseOk(printer.print(atLimit)), INC, KNOWN).valid()).isTrue();
 
         assertThat(parseErrors(printer.print(draftWithListSize(field, limit + 1)))).singleElement()
                 .satisfies(e -> assertThat(e).startsWith("$." + field + ": ").contains(String.valueOf(limit)));

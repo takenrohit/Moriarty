@@ -3,6 +3,7 @@ package dev.investigator.investigation;
 import dev.investigator.audit.AuditService;
 import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.domain.Evidence;
+import dev.investigator.domain.EvidenceRef;
 import dev.investigator.domain.Incident;
 import dev.investigator.domain.IncidentStatus;
 import dev.investigator.domain.IncidentTimeline;
@@ -30,6 +31,7 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -38,6 +40,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -305,9 +308,11 @@ public class InvestigationOrchestrator {
     private Outcome fromDraft(InvestigationContext ctx, String raw) {
         String incidentId = ctx.incidentId();
         ParseResult parsed = parser.parse(raw);
+        List<EvidenceRef> refs = evidenceService.refs(incidentId);
+        Set<String> known = refs.stream().map(EvidenceRef::id).collect(Collectors.toUnmodifiableSet());
         List<String> errors = switch (parsed) {
             case ParseResult.Invalid invalid -> invalid.errors();
-            case ParseResult.Ok ok -> validator.validateDraft(ok.draft(), incidentId).violations();
+            case ParseResult.Ok ok -> validator.validateDraft(ok.draft(), incidentId, known).violations();
         };
         String stage = parsed instanceof ParseResult.Ok ? "validation" : "parsing";
         if (errors.isEmpty() && parsed instanceof ParseResult.Ok ok) {
@@ -315,9 +320,9 @@ public class InvestigationOrchestrator {
             InvestigationStatus status = exhausted ? InvestigationStatus.INCONCLUSIVE : InvestigationStatus.COMPLETED;
             List<String> extra = exhausted ? List.of(budgetQuestion(ctx.budget())) : List.of();
             try {
-                InvestigationReport report = assembler.assemble(ok.draft(), ctx, status, extra,
-                        evidenceService.refs(incidentId), clock.instant());
-                errors = validator.validateReport(report).violations();
+                InvestigationReport report = assembler.assemble(ok.draft(), ctx, status, extra, refs,
+                        clock.instant());
+                errors = validator.validateReport(report, known).violations();
                 if (errors.isEmpty()) {
                     return new Outcome(status, report);
                 }
@@ -349,9 +354,11 @@ public class InvestigationOrchestrator {
      */
     private InvestigationReport fallbackReport(String incidentId, String service, InvestigationStatus status,
             String reason, List<String> details) {
-        InvestigationReport report = fallback.build(incidentId, service, status, reason, details,
-                evidenceRepository.findByIncident(incidentId), clock.instant());
-        ValidationResult check = validator.validateReport(report);
+        List<Evidence> stored = evidenceRepository.findByIncident(incidentId);
+        InvestigationReport report = fallback.build(incidentId, service, status, reason, details, stored,
+                clock.instant());
+        ValidationResult check = validator.validateReport(report,
+                stored.stream().map(Evidence::id).collect(Collectors.toUnmodifiableSet()));
         if (!check.valid()) {
             log.error("fallback report failed validation; storing it anyway incident_id={} violations={}",
                     incidentId, check.violations());

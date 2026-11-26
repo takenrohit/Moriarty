@@ -39,16 +39,20 @@ public final class ReportValidator {
 
     static final String TIMELINE_UNCITED = "a timeline entry must cite at least one evidence ID";
     static final String HYPOTHESIS_UNCITED = "a hypothesis must cite at least one supporting evidence ID";
+    /** A well-formed Evidence_ID of the incident that is not in the Evidence_Store (Req 4.1). */
+    public static final String UNKNOWN_EVIDENCE = "cites evidence that does not exist";
 
     /**
      * Checks a parsed draft against the Investigation's Incident_ID: the draft's {@code incidentId}
      * matches; every timeline entry cites at least one Evidence_ID; every hypothesis has at least one
      * supporting Evidence_ID; and every cited Evidence_ID (timeline, hypotheses, actions) has the form
-     * {@code ev-<incidentId>-<n>} with {@code n ≥ 1}.
+     * {@code ev-<incidentId>-<n>} with {@code n ≥ 1} and is one of {@code knownEvidenceIds}, the
+     * Evidence_IDs stored for the incident (Req 4.1, 4.2).
      */
-    public ValidationResult validateDraft(ReportDraft draft, String incidentId) {
+    public ValidationResult validateDraft(ReportDraft draft, String incidentId, Set<String> knownEvidenceIds) {
         Objects.requireNonNull(draft, "draft");
         Objects.requireNonNull(incidentId, "incidentId");
+        Set<String> known = Objects.requireNonNull(knownEvidenceIds, "knownEvidenceIds");
         List<String> violations = new ArrayList<>();
         Pattern ids = evidenceIdPattern(incidentId);
 
@@ -59,18 +63,18 @@ public final class ReportValidator {
             DraftTimelineEntry entry = draft.timeline().get(i);
             String path = "$.timeline[" + i + "].evidenceIds";
             requireCitation(violations, path, entry.evidenceIds(), TIMELINE_UNCITED);
-            checkIds(violations, path, entry.evidenceIds(), ids, incidentId);
+            checkIds(violations, path, entry.evidenceIds(), ids, incidentId, known);
         }
         for (int i = 0; i < draft.hypotheses().size(); i++) {
             DraftHypothesis h = draft.hypotheses().get(i);
             String path = "$.hypotheses[" + i + "]";
             requireCitation(violations, path + ".supportingEvidenceIds", h.supportingEvidenceIds(), HYPOTHESIS_UNCITED);
-            checkIds(violations, path + ".supportingEvidenceIds", h.supportingEvidenceIds(), ids, incidentId);
-            checkIds(violations, path + ".contradictingEvidenceIds", h.contradictingEvidenceIds(), ids, incidentId);
+            checkIds(violations, path + ".supportingEvidenceIds", h.supportingEvidenceIds(), ids, incidentId, known);
+            checkIds(violations, path + ".contradictingEvidenceIds", h.contradictingEvidenceIds(), ids, incidentId, known);
         }
         for (int i = 0; i < draft.actions().size(); i++) {
             DraftAction a = draft.actions().get(i);
-            checkIds(violations, "$.actions[" + i + "].evidenceIds", a.evidenceIds(), ids, incidentId);
+            checkIds(violations, "$.actions[" + i + "].evidenceIds", a.evidenceIds(), ids, incidentId, known);
         }
         return new ValidationResult(violations);
     }
@@ -80,10 +84,11 @@ public final class ReportValidator {
      * {@code INCONCLUSIVE} or {@code FAILED}; summary, generation time, timeline times, hypothesis
      * confidences and action types are present; every action's {@code requiresApproval} follows
      * {@link ActionPolicy#requiresApproval}; and there are at most {@value #MAX_REPORT_OPEN_QUESTIONS}
-     * open questions.
+     * open questions. Cited IDs must be in {@code knownEvidenceIds}, as in {@link #validateDraft}.
      */
-    public ValidationResult validateReport(InvestigationReport report) {
+    public ValidationResult validateReport(InvestigationReport report, Set<String> knownEvidenceIds) {
         Objects.requireNonNull(report, "report");
+        Set<String> known = Objects.requireNonNull(knownEvidenceIds, "knownEvidenceIds");
         List<String> violations = new ArrayList<>();
         String incidentId = report.incidentId();
         Pattern ids = null;
@@ -113,7 +118,7 @@ public final class ReportValidator {
                     violations.add(path + ".at: is required");
                 }
                 requireCitation(violations, path + ".evidenceIds", entry.evidenceIds(), TIMELINE_UNCITED);
-                checkIds(violations, path + ".evidenceIds", entry.evidenceIds(), ids, incidentId);
+                checkIds(violations, path + ".evidenceIds", entry.evidenceIds(), ids, incidentId, known);
             }
         }
         for (int i = 0; i < report.hypotheses().size(); i++) {
@@ -123,8 +128,8 @@ public final class ReportValidator {
                 violations.add(path + ".confidence: is required");
             }
             requireCitation(violations, path + ".supportingEvidenceIds", h.supportingEvidenceIds(), HYPOTHESIS_UNCITED);
-            checkIds(violations, path + ".supportingEvidenceIds", h.supportingEvidenceIds(), ids, incidentId);
-            checkIds(violations, path + ".contradictingEvidenceIds", h.contradictingEvidenceIds(), ids, incidentId);
+            checkIds(violations, path + ".supportingEvidenceIds", h.supportingEvidenceIds(), ids, incidentId, known);
+            checkIds(violations, path + ".contradictingEvidenceIds", h.contradictingEvidenceIds(), ids, incidentId, known);
         }
         for (int i = 0; i < report.actions().size(); i++) {
             RecommendedAction a = report.actions().get(i);
@@ -137,7 +142,7 @@ public final class ReportValidator {
                 violations.add(path + ".requiresApproval: must be " + required + " for "
                         + (a.type() == null ? "untyped" : a.type().name()) + " actions");
             }
-            checkIds(violations, path + ".evidenceIds", a.evidenceIds(), ids, incidentId);
+            checkIds(violations, path + ".evidenceIds", a.evidenceIds(), ids, incidentId, known);
         }
         if (report.openQuestions().size() > MAX_REPORT_OPEN_QUESTIONS) {
             violations.add("$.openQuestions: must have at most " + MAX_REPORT_OPEN_QUESTIONS + " items");
@@ -157,7 +162,7 @@ public final class ReportValidator {
     }
 
     private static void checkIds(List<String> violations, String path, List<String> cited, Pattern ids,
-            String incidentId) {
+            String incidentId, Set<String> known) {
         if (ids == null) {
             return;
         }
@@ -166,6 +171,8 @@ public final class ReportValidator {
             if (id == null || !ids.matcher(id).matches()) {
                 violations.add(path + "[" + i + "]: is not an evidence ID of incident " + incidentId
                         + " (expected ev-" + incidentId + "-<n>)");
+            } else if (!known.contains(id)) {
+                violations.add(path + "[" + i + "]: " + UNKNOWN_EVIDENCE);
             }
         }
     }

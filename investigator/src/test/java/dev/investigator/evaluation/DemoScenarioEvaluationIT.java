@@ -26,6 +26,7 @@ import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -112,7 +113,7 @@ class DemoScenarioEvaluationIT {
         // Schema-valid (Req 22.3): the report's draft fields conform to the Report_Draft_Schema, and the
         // report passes the checks the store applies.
         assertThat(parser.parse(draftView(json).toString())).isInstanceOf(ParseResult.Ok.class);
-        assertThat(validator.validateReport(report).violations()).isEmpty();
+        assertThat(validator.validateReport(report, Set.copyOf(stored)).violations()).isEmpty();
     }
 
     /** Polls the JSON report until it is stored; fails after {@link #REPORT_LIMIT} from {@code posted}. */
