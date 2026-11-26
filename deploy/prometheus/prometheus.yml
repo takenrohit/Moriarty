@@ -24,6 +24,12 @@ scrape_configs:
     static_configs:
       - targets: ["otel-collector:8889"]
 
+  # The investigator's own meters (investigator_*), scraped from its actuator (CP-70).
+  - job_name: investigator
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["investigator:8080"]
+
   # Direct scrape of the mock services' actuator endpoint (served when the
   # mock-services app exposes /actuator/prometheus).
   - job_name: mock-services
