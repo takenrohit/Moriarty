@@ -41,16 +41,16 @@ public class InMemoryIncidentRepository implements IncidentRepository {
     }
 
     @Override
-    public Optional<Incident> findOpenByFingerprint(String fingerprint) {
+    public List<Incident> findOpenByFingerprint(String fingerprint) {
         if (fingerprint == null) {
-            return Optional.empty();
+            return List.of();
         }
         return incidents.values().stream()
                 .filter(incident -> fingerprint.equals(incident.fingerprint()))
                 .filter(incident -> incident.status() == IncidentStatus.OPEN
                         || incident.status() == IncidentStatus.INVESTIGATING)
                 .sorted(NEWEST_FIRST)
-                .findFirst();
+                .toList();
     }
 
     @Override

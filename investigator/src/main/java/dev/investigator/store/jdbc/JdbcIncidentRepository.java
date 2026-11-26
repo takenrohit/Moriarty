@@ -85,19 +85,18 @@ public class JdbcIncidentRepository implements IncidentRepository {
 
     /** Uses the {@code (fingerprint, status)} index created in V1. */
     @Override
-    public Optional<Incident> findOpenByFingerprint(String fingerprint) {
+    public List<Incident> findOpenByFingerprint(String fingerprint) {
         if (fingerprint == null) {
-            return Optional.empty();
+            return List.of();
         }
         return jdbc.sql("""
                 SELECT record, status FROM incidents
                 WHERE fingerprint = :fingerprint AND status IN ('OPEN', 'INVESTIGATING')
                 ORDER BY detected_at DESC NULLS LAST, id
-                LIMIT 1
                 """)
                 .param("fingerprint", fingerprint)
                 .query((rs, n) -> read(rs.getString("record"), rs.getString("status")))
-                .optional();
+                .list();
     }
 
     @Override

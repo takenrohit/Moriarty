@@ -8,7 +8,6 @@ import dev.investigator.investigation.InvestigationOrchestrator;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
 import java.util.Objects;
-import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -18,8 +17,8 @@ import org.springframework.stereotype.Service;
  * Incident with the same Fingerprint (Req 11.1 to 11.5, CP-50).
  *
  * <p>Under the {@link FingerprintLock} for the candidate's Fingerprint it looks up
- * {@link IncidentRepository#findOpenByFingerprint} ({@code OPEN} or {@code INVESTIGATING}) and also
- * requires that Incident's Investigation to be {@code PENDING} or {@code RUNNING} (or not yet created),
+ * {@link IncidentRepository#findOpenByFingerprint} ({@code OPEN} or {@code INVESTIGATING}) and attaches to
+ * the newest whose Investigation is {@code PENDING} or {@code RUNNING} (or not yet created),
  * which closes the short gap between the Investigation ending and the Incident becoming
  * {@code REPORTED}. A match records the raw alert against the existing
  * Incident in the audit trail and starts nothing; otherwise the candidate is stored, its alert recorded and
@@ -58,18 +57,19 @@ public class DedupService {
             return start(candidate, source, payload);
         }
         return lock.withLock(candidate.fingerprint(), () -> {
-            Optional<Incident> open = incidents.findOpenByFingerprint(candidate.fingerprint());
-            // The Investigation ends just before its Incident becomes REPORTED; an ended one is not open.
-            InvestigationStatus status = open.flatMap(i -> investigations.find(i.id()))
-                    .map(Investigation::status).orElse(InvestigationStatus.PENDING);
-            if (open.isEmpty() || !isActive(status)) {
-                return start(candidate, source, payload);
+            // The Investigation ends just before its Incident becomes REPORTED (or the Incident stays open if
+            // that update failed); an ended one is not open, so skip it and look at the others.
+            for (Incident existing : incidents.findOpenByFingerprint(candidate.fingerprint())) {
+                InvestigationStatus status = investigations.find(existing.id())
+                        .map(Investigation::status).orElse(InvestigationStatus.PENDING);
+                if (isActive(status)) {
+                    audit.recordAlert(source, payload, existing);
+                    log.info("duplicate alert attached incident_id={} fingerprint={} source={}",
+                            existing.id(), candidate.fingerprint(), source);
+                    return new Admission(existing.id(), status, true);
+                }
             }
-            Incident existing = open.get();
-            audit.recordAlert(source, payload, existing);
-            log.info("duplicate alert attached incident_id={} fingerprint={} source={}",
-                    existing.id(), candidate.fingerprint(), source);
-            return new Admission(existing.id(), status, true);
+            return start(candidate, source, payload);
         });
     }
 

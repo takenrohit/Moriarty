@@ -21,11 +21,13 @@ public interface IncidentRepository {
     List<Incident> findAllNewestFirst();
 
     /**
-     * The newest open Incident with this Fingerprint, used by deduplication (Req 11.1, CP-50). "Open"
-     * means status {@code OPEN} or {@code INVESTIGATING}; a {@code REPORTED} or {@code RESOLVED} Incident
-     * is not open, so a repeat alert after its report starts a fresh investigation.
+     * Every open Incident with this Fingerprint, newest {@code detectedAt} first (ties ordered by ID), used by
+     * deduplication (Req 11.1, CP-50). "Open" means status {@code OPEN} or {@code INVESTIGATING}; a
+     * {@code REPORTED} or {@code RESOLVED} Incident is not open, so a repeat alert after its report starts a
+     * fresh investigation. More than one can be returned when an Incident's Investigation ended but the
+     * Incident never became {@code REPORTED}, so the caller decides which one is still being investigated.
      */
-    Optional<Incident> findOpenByFingerprint(String fingerprint);
+    List<Incident> findOpenByFingerprint(String fingerprint);
 
     /**
      * Replaces the status of a stored Incident.
