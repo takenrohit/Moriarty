@@ -4,12 +4,11 @@ import dev.investigator.integration.changes.ChangeClient;
 import dev.investigator.integration.changes.ChangeRecord;
 import java.time.Instant;
 import java.util.List;
-import org.springframework.context.annotation.Profile;
-import org.springframework.stereotype.Component;
 
-/** {@link ChangeClient} backed by {@link MockScenario}. */
-@Component
-@Profile("mock")
+/**
+ * {@link ChangeClient} backed by {@link MockScenario}. Registered by {@code IntegrationConfig} when no
+ * real change client is active.
+ */
 public class MockChangeClient implements ChangeClient {
 
     private final ScenarioAnchorProvider anchors;

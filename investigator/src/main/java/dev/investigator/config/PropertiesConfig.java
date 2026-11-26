@@ -8,6 +8,6 @@ import org.springframework.context.annotation.Configuration;
  * {@link LlmConfig}, so it is available even when the production Chat_Model is disabled.
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties({InvestigatorProperties.class, LlmProperties.class})
+@EnableConfigurationProperties({InvestigatorProperties.class, LlmProperties.class, IntegrationProperties.class})
 public class PropertiesConfig {
 }

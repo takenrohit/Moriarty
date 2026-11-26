@@ -5,15 +5,12 @@ import dev.investigator.integration.metrics.MetricSeries;
 import dev.investigator.integration.metrics.MetricsClient;
 import java.time.Duration;
 import java.time.Instant;
-import org.springframework.context.annotation.Profile;
-import org.springframework.stereotype.Component;
 
 /**
  * {@link MetricsClient} backed by {@link MockScenario}; returns at most
  * {@code investigator.tools.max-metric-points} points, enlarging the step when needed (Req 11.14).
+ * Registered by {@code IntegrationConfig} when no real metrics client is active.
  */
-@Component
-@Profile("mock")
 public class MockMetricsClient implements MetricsClient {
 
     private final ScenarioAnchorProvider anchors;

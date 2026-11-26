@@ -4,16 +4,12 @@ import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.integration.logs.LogClient;
 import dev.investigator.integration.logs.LogSearchResult;
 import java.time.Instant;
-import org.springframework.context.annotation.Profile;
-import org.springframework.stereotype.Component;
 
 /**
  * {@link LogClient} backed by {@link MockScenario}; applies {@code |= "text"} line filters and returns
  * at most {@code min(limit, investigator.tools.log-fetch-limit)} entries, setting {@code truncated} when
- * more matched (Req 11.14).
+ * more matched (Req 11.14). Registered by {@code IntegrationConfig} when no real log client is active.
  */
-@Component
-@Profile("mock")
 public class MockLogClient implements LogClient {
 
     private final ScenarioAnchorProvider anchors;

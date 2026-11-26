@@ -1,0 +1,12 @@
+# "real" profile: each integration whose base URL is non-blank uses its real client; a blank or unset
+# URL falls back to the mock client (Req 7.1, 7.2, CP-61). Every value comes from the environment
+# (Req 7.5, 7.6, 15.2); credentials default to empty and are never logged.
+investigator:
+  integrations:
+    metrics:
+      base-url: ${PROMETHEUS_URL:}
+      bearer-token: ${PROMETHEUS_BEARER_TOKEN:}
+      username: ${PROMETHEUS_USERNAME:}
+      password: ${PROMETHEUS_PASSWORD:}
+      connect-timeout: ${PROMETHEUS_CONNECT_TIMEOUT:2s}
+      read-timeout: ${PROMETHEUS_READ_TIMEOUT:10s}

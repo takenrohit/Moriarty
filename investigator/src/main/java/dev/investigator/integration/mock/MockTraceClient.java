@@ -5,16 +5,12 @@ import dev.investigator.integration.traces.TraceClient;
 import dev.investigator.integration.traces.TraceSearchResult;
 import java.time.Duration;
 import java.time.Instant;
-import org.springframework.context.annotation.Profile;
-import org.springframework.stereotype.Component;
 
 /**
  * {@link TraceClient} backed by {@link MockScenario}; returns at most
  * {@code min(limit, investigator.tools.trace-limit)} traces, setting {@code truncated} when more matched
- * (Req 11.14).
+ * (Req 11.14). Registered by {@code IntegrationConfig} when no real trace client is active.
  */
-@Component
-@Profile("mock")
 public class MockTraceClient implements TraceClient {
 
     private final ScenarioAnchorProvider anchors;
