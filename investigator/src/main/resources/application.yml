@@ -26,6 +26,12 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:  # _bucket series for the dashboards' p50/p95 panels (CP-70)
+        "[investigator.investigation.duration]": true
+        "[investigator.tool.latency]": true
+        "[investigator.approval.wait]": true
   tracing:
     sampling:
       probability: 1.0        # every investigation is traced; spans stay in memory without an endpoint

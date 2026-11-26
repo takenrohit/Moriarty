@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.investigator.config.JacksonConfig;
 import dev.investigator.investigation.InvestigationObservability;
 import dev.investigator.logging.LogFields;
+import dev.investigator.observability.InvestigatorMetrics;
 import dev.investigator.store.jdbc.PgValues;
 import dev.langchain4j.data.message.ChatMessageSerializer;
 import dev.langchain4j.model.chat.listener.ChatModelErrorContext;
@@ -38,11 +39,14 @@ public class AuditChatModelListener implements ChatModelListener {
 
     private final AuditService audit;
     private final InvestigationObservability observability;
+    private final InvestigatorMetrics metrics;
     private final ObjectMapper codec = JacksonConfig.jsonCodec();
 
-    public AuditChatModelListener(AuditService audit, InvestigationObservability observability) {
+    public AuditChatModelListener(AuditService audit, InvestigationObservability observability,
+            InvestigatorMetrics metrics) {
         this.audit = audit;
         this.observability = observability;
+        this.metrics = metrics;
     }
 
     @Override
@@ -71,6 +75,8 @@ public class AuditChatModelListener implements ChatModelListener {
                 observation.stop();
             }
         });
+        guarded(() -> metrics.llmTokens(model, usage == null ? null : usage.inputTokenCount(),
+                usage == null ? null : usage.outputTokenCount()));
         guarded(() -> {
             String responseJson = response == null || response.aiMessage() == null
                     ? null : ChatMessageSerializer.messageToJson(response.aiMessage());

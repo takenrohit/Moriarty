@@ -5,6 +5,8 @@ import static dev.investigator.testsupport.ScriptedChatModel.toolCall;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.investigator.audit.NoOpAuditService;
+import dev.investigator.observability.InvestigatorMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.domain.ActionType;
@@ -228,7 +230,7 @@ class InvestigationOrchestratorSmokeTest {
         InvestigationOrchestrator shortOrchestrator = new InvestigationOrchestrator(investigations, incidents, reports,
                 evidenceRepository, evidenceService, contexts, blockingAgent, promptInputs, parser, validator,
                 assembler, fallback, publisher, shortTimeout, clock, new NoOpAuditService(),
-                new InvestigationObservability(ObservationRegistry.NOOP));
+                new InvestigationObservability(ObservationRegistry.NOOP), new InvestigatorMetrics(new SimpleMeterRegistry()));
         try {
             Incident incident = newIncident();
             long started = System.nanoTime();

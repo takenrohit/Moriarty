@@ -12,6 +12,7 @@ import dev.investigator.domain.InvestigationReport;
 import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.evidence.EvidenceService;
 import dev.investigator.logging.LogFields;
+import dev.investigator.observability.InvestigatorMetrics;
 import dev.investigator.report.FallbackReportBuilder;
 import dev.investigator.report.ParseResult;
 import dev.investigator.report.ReportAssembler;
@@ -121,6 +122,7 @@ public class InvestigationOrchestrator {
     private final Clock clock;
     private final AuditService audit;
     private final InvestigationObservability observability;
+    private final InvestigatorMetrics metrics;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public InvestigationOrchestrator(InvestigationRepository investigations, IncidentRepository incidents,
@@ -128,7 +130,7 @@ public class InvestigationOrchestrator {
             InvestigationContextRegistry contexts, InvestigatorAgent agent, PromptInputs promptInputs,
             ReportDraftParser parser, ReportValidator validator, ReportAssembler assembler,
             FallbackReportBuilder fallback, ReportPublisher publisher, InvestigatorProperties properties,
-            Clock clock, AuditService audit, InvestigationObservability observability) {
+            Clock clock, AuditService audit, InvestigationObservability observability, InvestigatorMetrics metrics) {
         this.investigations = investigations;
         this.incidents = incidents;
         this.reports = reports;
@@ -146,6 +148,7 @@ public class InvestigationOrchestrator {
         this.clock = clock;
         this.audit = audit;
         this.observability = observability;
+        this.metrics = metrics;
     }
 
     /**
@@ -203,6 +206,7 @@ public class InvestigationOrchestrator {
                 return;
             }
             // The investigation span (Req 1.1, 1.4); its scope is also opened on each agent thread.
+            long startedNanos = System.nanoTime();
             Observation observation = observability.investigation(incidentId, incidents.find(incidentId).orElse(null))
                     .start();
             try (Observation.Scope scope = observation.openScope()) {
@@ -220,7 +224,7 @@ public class InvestigationOrchestrator {
                             INTERNAL_ERROR + e.getClass().getSimpleName(), List.of());
                 }
                 observation.lowCardinalityKeyValue(InvestigationObservability.STATUS, outcome.status().name());
-                conclude(ctx, InvestigationStatus.RUNNING, outcome, concluded);
+                conclude(ctx, InvestigationStatus.RUNNING, outcome, concluded, startedNanos);
             } catch (RuntimeException e) {
                 observation.error(e);
                 throw e;
@@ -390,7 +394,9 @@ public class InvestigationOrchestrator {
                         clock.instant());
                 errors = validator.validateReport(report, known).violations();
                 if (errors.isEmpty()) {
-                    return new DraftCheck(new Outcome(status, report), List.of());
+                    return new DraftCheck(new Outcome(status, report,
+                        attempt == 1 ? InvestigatorMetrics.REPORT_VALID : InvestigatorMetrics.REPORT_CORRECTED),
+                        List.of());
                 }
                 stage = "report validation";
             } catch (IllegalArgumentException e) {
@@ -410,7 +416,8 @@ public class InvestigationOrchestrator {
 
     private Outcome fallbackOutcome(String incidentId, InvestigationStatus status, String reason, List<String> details) {
         String service = incidents.find(incidentId).map(Incident::affectedService).orElse(null);
-        return new Outcome(status, fallbackReport(incidentId, service, status, reason, details));
+        return new Outcome(status, fallbackReport(incidentId, service, status, reason, details),
+                InvestigatorMetrics.REPORT_FALLBACK);
     }
 
     /**
@@ -434,7 +441,7 @@ public class InvestigationOrchestrator {
 
     /** Writes the result if this caller wins the terminal transition (Req 14.9, 14.10). */
     private void conclude(InvestigationContext ctx, InvestigationStatus from, Outcome outcome,
-            AtomicBoolean concluded) {
+            AtomicBoolean concluded, long startedNanos) {
         String incidentId = ctx.incidentId();
         stopAccepting(ctx, concluded);
         investigations.recordToolCalls(incidentId, ctx.used().get());
@@ -443,10 +450,11 @@ public class InvestigationOrchestrator {
                     incidentId, outcome.status());
             return;
         }
+        metrics.investigationFinished(outcome.status(), Duration.ofNanos(System.nanoTime() - startedNanos));
         // Removed before the report becomes visible, so a reader that sees the report also sees no
         // context; tool calls were already refused since stopAccepting (Req 11.13).
         contexts.remove(incidentId);
-        boolean stored = reports.saveIfAbsent(outcome.report());
+        boolean stored = storeReport(outcome.report(), outcome.validationStatus());
         if (!stored) {
             log.warn("a report is already stored; keeping it incident_id={}", incidentId);
             audit.recordReport(outcome.report());
@@ -471,7 +479,7 @@ public class InvestigationOrchestrator {
             }
             InvestigationReport report = fallbackReport(incidentId, incident.affectedService(),
                     InvestigationStatus.FAILED, reason, List.of());
-            boolean stored = reports.saveIfAbsent(report);
+            boolean stored = storeReport(report, InvestigatorMetrics.REPORT_FALLBACK);
             if (!stored) {
                 audit.recordReport(report);
             }
@@ -482,6 +490,15 @@ public class InvestigationOrchestrator {
         } finally {
             contexts.remove(incidentId);
         }
+    }
+
+    /** Stores the report unless one exists, counting a stored one by {@code validationStatus} (Req 2.4). */
+    private boolean storeReport(InvestigationReport report, String validationStatus) {
+        boolean stored = reports.saveIfAbsent(report);
+        if (stored) {
+            metrics.reportGenerated(validationStatus);
+        }
+        return stored;
     }
 
     /** Writes a newly stored report to the log (Req 17.9); the publisher never throws. */
@@ -540,8 +557,8 @@ public class InvestigationOrchestrator {
         return id;
     }
 
-    /** Terminal status and the report to store with it. */
-    private record Outcome(InvestigationStatus status, InvestigationReport report) {
+    /** Terminal status, the report to store with it, and its {@code validation_status} meter tag. */
+    private record Outcome(InvestigationStatus status, InvestigationReport report, String validationStatus) {
     }
 
     /** A checked draft: the outcome if it is valid, otherwise the errors. */

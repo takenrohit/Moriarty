@@ -28,6 +28,7 @@ import dev.investigator.investigation.InvestigationContext;
 import dev.investigator.investigation.InvestigationObservability;
 import dev.investigator.investigation.InvestigationScope;
 import dev.investigator.logging.LogFields;
+import dev.investigator.observability.InvestigatorMetrics;
 import dev.investigator.runbook.RunbookCatalog;
 import dev.investigator.runbook.RunbookMatch;
 import dev.langchain4j.agent.tool.P;
@@ -88,12 +89,13 @@ public class ObservabilityTools {
     private final Clock clock;
     private final AuditService audit;
     private final InvestigationObservability observability;
+    private final InvestigatorMetrics meters;
 
     public ObservabilityTools(ToolGuard guard, EvidenceService evidence,
             MetricsClient metrics, LogClient logs, TraceClient traces, ChangeClient changes,
             RunbookCatalog runbooks, MetricSummarizer metricSummarizer, LogSummarizer logSummarizer,
             TraceSummarizer traceSummarizer, ObjectMapper mapper, InvestigatorProperties properties,
-            Clock clock, AuditService audit, InvestigationObservability observability) {
+            Clock clock, AuditService audit, InvestigationObservability observability, InvestigatorMetrics meters) {
         this.guard = guard;
         this.evidence = evidence;
         this.metrics = metrics;
@@ -109,6 +111,7 @@ public class ObservabilityTools {
         this.clock = clock;
         this.audit = audit;
         this.observability = observability;
+        this.meters = meters;
     }
 
     @Tool("Query a metric time series for one service. start/end are ISO-8601 instants, e.g. 2026-11-23T14:00:00Z."
@@ -266,7 +269,9 @@ public class ObservabilityTools {
                     outcome == null ? "error" : outcome.name);
             observation.stop();
         }
-        long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
+        Duration duration = Duration.ofNanos(System.nanoTime() - started);
+        meters.toolCallFinished(toolName, outcome.name, duration);
+        long durationMs = duration.toMillis();
         logFinished(toolName, outcome, durationMs);
         audit.recordToolCall(new AuditService.ToolCall(incidentId, toolName, args, outcome.name, durationMs,
                 outcome.stored.stream().map(s -> s.evidence().id()).toList(),
