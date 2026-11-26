@@ -1,0 +1,16 @@
+# "redis" profile: cross-instance Dedup_Lock on Redis (Req 11.3, CP-50). Without this profile the
+# in-process LocalFingerprintLock is used and Redis is never contacted (Req 11.5).
+spring:
+  data:
+    redis:
+      url: ${REDIS_URL:redis://localhost:6379}
+
+management:
+  health:
+    redis:
+      enabled: true
+
+investigator:
+  dedup:
+    lock-ttl: ${DEDUP_LOCK_TTL:30s}     # how long a crashed holder can block the same fingerprint
+    lock-wait: ${DEDUP_LOCK_WAIT:10s}   # how long a duplicate waits before it is rejected with 503

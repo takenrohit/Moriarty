@@ -3,61 +3,51 @@ package dev.investigator.alert;
 import dev.investigator.api.AlertAcceptedResponse;
 import dev.investigator.api.MockAlertRequest;
 import dev.investigator.api.WebhookAcceptedResponse;
-import dev.investigator.audit.AuditService;
+import dev.investigator.dedup.DedupService;
 import dev.investigator.domain.Incident;
-import dev.investigator.domain.Investigation;
-import dev.investigator.investigation.InvestigationOrchestrator;
-import dev.investigator.store.IncidentRepository;
 import java.util.List;
 import org.springframework.stereotype.Service;
 
 /**
- * Accepts a validated Mock_Alert, normalizes it into an Incident, stores it, hands it to the
- * Investigation_Orchestrator and answers with the new Incident_ID (Req 4.2, 4.4, 5.1).
+ * Accepts a validated Mock_Alert or normalized webhook Incidents and passes each through the
+ * {@link DedupService}, answering with the Incident_ID (Req 4.2, 4.4, 5.1, 11.1, 11.2).
  *
  * <p>An alert the {@link AlertNormalizer} rejects throws {@link AlertValidationException} before
- * anything is stored (Req 4.5 to 4.7). {@link InvestigationOrchestrator#start} creates the
- * {@code PENDING} Investigation and returns without waiting for the agent (Req 4.3). Each stored Incident
- * is recorded with the alert it came from in the audit trail (Req 12.5).
+ * anything is stored (Req 4.5 to 4.7). A new Incident is stored, audited with the alert it came from
+ * (Req 12.5) and handed to the orchestrator, which returns without waiting for the agent (Req 4.3). A
+ * repeat alert matching an open Incident is audited against that Incident and answered with its ID and
+ * current Investigation status; no new investigation starts (Req 11.1, 11.4).
  */
 @Service
 public class AlertIntakeService {
 
     private final AlertNormalizer normalizer;
-    private final IncidentRepository incidents;
-    private final InvestigationOrchestrator orchestrator;
-    private final AuditService audit;
+    private final DedupService dedup;
 
-    public AlertIntakeService(AlertNormalizer normalizer, IncidentRepository incidents,
-            InvestigationOrchestrator orchestrator, AuditService audit) {
+    public AlertIntakeService(AlertNormalizer normalizer, DedupService dedup) {
         this.normalizer = normalizer;
-        this.incidents = incidents;
-        this.orchestrator = orchestrator;
-        this.audit = audit;
+        this.dedup = dedup;
     }
 
     public AlertAcceptedResponse accept(MockAlertRequest request) {
         Incident incident = normalizer.normalize(request);
-        incidents.save(incident);
-        audit.recordAlert("mock", request, incident);
-        Investigation investigation = orchestrator.start(incident);
-        return new AlertAcceptedResponse(incident.id(), investigation.status(), reportUrl(incident.id()));
+        DedupService.Admission admission = dedup.admit(incident, "mock", request);
+        return new AlertAcceptedResponse(admission.incidentId(), admission.status(),
+                reportUrl(admission.incidentId()));
     }
 
     /**
-     * Stores already-normalized webhook Incidents, starts one investigation per Incident and returns their
-     * IDs in order (Req 8.2, 9.2). Deduplication by fingerprint is added in plan 2.7.
+     * Admits already-normalized webhook Incidents one by one and returns their IDs (new or existing) in
+     * order (Req 8.2, 9.2, 11.1).
      *
      * @param source  alert source recorded in the audit trail, for example {@code alertmanager}
      * @param payload the webhook payload the Incidents were normalized from
      */
     public WebhookAcceptedResponse acceptAll(String source, Object payload, List<Incident> normalized) {
-        for (Incident incident : normalized) {
-            incidents.save(incident);
-            audit.recordAlert(source, payload, incident);
-        }
-        normalized.forEach(orchestrator::start);
-        return new WebhookAcceptedResponse(normalized.stream().map(Incident::id).toList());
+        List<String> ids = normalized.stream()
+                .map(incident -> dedup.admit(incident, source, payload).incidentId())
+                .toList();
+        return new WebhookAcceptedResponse(ids);
     }
 
     /** Relative URL of the report endpoint for {@code incidentId}. */
