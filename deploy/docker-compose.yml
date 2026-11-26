@@ -8,8 +8,9 @@
 # Backend config files under deploy/ are mounted read-only.
 #
 # Host ports: investigator 8080, checkout-api 8081, payment-gateway 8082, payment-provider 8083,
-# fake-github 8089, grafana 3000, prometheus 9090, alertmanager 9093, loki 3100, tempo 3200,
-# and on 127.0.0.1 only: postgres 5432, redis 6379.
+# grafana 3000, prometheus 9090, alertmanager 9093, loki 3100, tempo 3200,
+# and on 127.0.0.1 only: fake-github 8089, postgres 5432, redis 6379.
+# Demo sequence (start, deploy, inject the fault): mock-services/README.md.
 
 name: moriarty
 
@@ -126,13 +127,20 @@ services:
       OTEL_SERVICE_NAME: payment-provider
       OTEL_RESOURCE_ATTRIBUTES: service.version=${PAYMENT_PROVIDER_VERSION:-v1.0.0},deployment.environment=local
 
-  # WireMock serving GitHub-compatible deployment and commit stubs (CP-46).
-  # The stub mappings under deploy/fake-github are added with the deploy script (plan 2.2).
+  # WireMock serving GitHub-compatible deployment and commit stubs (CP-46, CP-60).
+  # Baseline stubs (checkout-api v2.14.2, 26 h ago) are mounted read-only from deploy/fake-github.
+  # mock-services/deploy.ps1|.sh adds a new deployment at runtime through the admin API
+  # (POST /__admin/mappings); runtime stubs live in memory until the container restarts.
+  # The investigator reads it as http://fake-github:8080. The admin API has no authentication,
+  # so the host port is bound to 127.0.0.1 only.
   fake-github:
     image: wiremock/wiremock:3.13.2-alpine
-    command: ["--disable-banner"]
+    command: ["--disable-banner", "--max-request-journal-entries=1000"]
+    volumes:
+      - ./fake-github/mappings:/home/wiremock/mappings:ro
+      - ./fake-github/__files:/home/wiremock/__files:ro
     ports:
-      - "8089:8080"
+      - "127.0.0.1:8089:8080"
     networks: [investigator-net]
     deploy:
       resources:

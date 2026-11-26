@@ -1,0 +1,20 @@
+[
+  {
+    "url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform/deployments/1000001",
+    "id": 1000001,
+    "sha": "9c41e7b2d05a8f36c1e4b7a2d9f0e3c58b6a1d47",
+    "ref": "checkout-api-v2.14.2",
+    "task": "deploy",
+    "payload": { "service": "checkout-api", "version": "v2.14.2" },
+    "original_environment": "production",
+    "environment": "production",
+    "description": "Deploy checkout-api v2.14.2",
+    "creator": { "login": "dev-bob", "type": "User" },
+    "created_at": "{{now offset='-26 hours'}}",
+    "updated_at": "{{now offset='-26 hours'}}",
+    "statuses_url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform/deployments/1000001/statuses",
+    "repository_url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform",
+    "transient_environment": false,
+    "production_environment": true
+  }
+]

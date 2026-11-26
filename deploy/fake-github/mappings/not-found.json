@@ -1,0 +1,16 @@
+{
+  "name": "Fallback: GitHub-style 404 for any other /repos path",
+  "priority": 10,
+  "request": {
+    "method": "ANY",
+    "urlPathPattern": "/repos/.*"
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-GitHub-Api-Version": "2022-11-28"
+    },
+    "bodyFileName": "not-found.json"
+  }
+}

@@ -1,0 +1,15 @@
+[
+  {
+    "url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform/pulls/1398",
+    "html_url": "https://github.com/moriarty-demo/checkout-platform/pull/1398",
+    "number": 1398,
+    "state": "closed",
+    "title": "Add order history pagination",
+    "user": { "login": "dev-bob", "type": "User" },
+    "created_at": "{{now offset='-30 hours'}}",
+    "merged_at": "{{now offset='-27 hours'}}",
+    "merge_commit_sha": "9c41e7b2d05a8f36c1e4b7a2d9f0e3c58b6a1d47",
+    "head": { "ref": "feature/order-history-pagination" },
+    "base": { "ref": "main" }
+  }
+]

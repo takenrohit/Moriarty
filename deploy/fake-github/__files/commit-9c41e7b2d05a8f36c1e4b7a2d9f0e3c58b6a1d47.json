@@ -1,0 +1,30 @@
+{
+  "url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform/commits/9c41e7b2d05a8f36c1e4b7a2d9f0e3c58b6a1d47",
+  "sha": "9c41e7b2d05a8f36c1e4b7a2d9f0e3c58b6a1d47",
+  "html_url": "https://github.com/moriarty-demo/checkout-platform/commit/9c41e7b2d05a8f36c1e4b7a2d9f0e3c58b6a1d47",
+  "commit": {
+    "message": "Add order history pagination (#1398)",
+    "author": { "name": "dev-bob", "email": "dev-bob@users.noreply.github.com", "date": "{{now offset='-27 hours'}}" },
+    "committer": { "name": "GitHub", "email": "noreply@github.com", "date": "{{now offset='-27 hours'}}" }
+  },
+  "author": { "login": "dev-bob", "type": "User" },
+  "committer": { "login": "web-flow", "type": "User" },
+  "parents": [ { "sha": "1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e" } ],
+  "stats": { "total": 64, "additions": 52, "deletions": 12 },
+  "files": [
+    {
+      "filename": "checkout-api/src/main/java/com/example/checkout/orders/OrderHistoryController.java",
+      "status": "modified",
+      "additions": 41,
+      "deletions": 9,
+      "changes": 50
+    },
+    {
+      "filename": "checkout-api/src/main/resources/templates/order-history.html",
+      "status": "modified",
+      "additions": 11,
+      "deletions": 3,
+      "changes": 14
+    }
+  ]
+}

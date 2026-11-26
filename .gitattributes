@@ -1,0 +1,2 @@
+# Shell scripts run inside Linux containers and on Linux/macOS hosts; keep LF on every checkout.
+*.sh text eol=lf

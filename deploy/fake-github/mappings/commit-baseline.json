@@ -1,0 +1,20 @@
+{
+  "name": "GET commit: baseline deployment sha (changed files)",
+  "priority": 5,
+  "request": {
+    "method": "GET",
+    "urlPath": "/repos/moriarty-demo/checkout-platform/commits/9c41e7b2d05a8f36c1e4b7a2d9f0e3c58b6a1d47"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json; charset=utf-8",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "X-RateLimit-Limit": "5000",
+      "X-RateLimit-Remaining": "4999",
+      "X-RateLimit-Reset": "{{now offset='1 hours' format='unix'}}"
+    },
+    "bodyFileName": "commit-9c41e7b2d05a8f36c1e4b7a2d9f0e3c58b6a1d47.json",
+    "transformers": ["response-template"]
+  }
+}

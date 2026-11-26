@@ -1,0 +1,14 @@
+[
+  {
+    "url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform/deployments/1000001/statuses/2000001",
+    "id": 2000001,
+    "state": "success",
+    "description": "Deployed checkout-api v2.14.2",
+    "environment": "production",
+    "creator": { "login": "dev-bob", "type": "User" },
+    "created_at": "{{now offset='-1558 minutes'}}",
+    "updated_at": "{{now offset='-1558 minutes'}}",
+    "deployment_url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform/deployments/1000001",
+    "repository_url": "http://fake-github:8080/repos/moriarty-demo/checkout-platform"
+  }
+]
