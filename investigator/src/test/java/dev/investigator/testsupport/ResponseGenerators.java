@@ -1,6 +1,7 @@
 package dev.investigator.testsupport;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -10,9 +11,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.SplittableRandom;
@@ -24,7 +27,8 @@ import java.util.SplittableRandom;
  *
  * <p>Prometheus: {@link #prometheusMatrix} builds a {@code query_range} matrix body with a single series, as
  * the client requires (CP-61). Loki: {@link #lokiStreams} builds a {@code query_range} streams body. Tempo:
- * {@link #tempoSearch} builds an {@code /api/search} body. GitHub generators are added by a later task.
+ * {@link #tempoSearch} builds an {@code /api/search} body. GitHub: {@link #githubDeployments} builds a
+ * deployments array with its commit and commit-pulls bodies.
  */
 public final class ResponseGenerators {
 
@@ -299,6 +303,124 @@ public final class ResponseGenerators {
         root.putObject("metrics").put("inspectedBytes", "1024").put("completedJobs", 1).put("totalJobs", 1);
         try {
             return new TempoSearch(JSON.writeValueAsString(root), expected);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * What a correct client must produce for one kept GitHub deployment.
+     *
+     * @param version {@code payload.version}, else {@code ref}
+     * @param deployedAt the {@code created_at} time
+     * @param files the commit's file names, capped at the maximum
+     */
+    public record GitHubChange(String version, Instant deployedAt, List<String> files) {
+
+        public GitHubChange {
+            files = List.copyOf(files);
+        }
+    }
+
+    /**
+     * A GitHub deployments body, the commit and commit-pulls bodies by sha, and the expected changes.
+     *
+     * @param body the {@code GET /repos/{o}/{r}/deployments} body
+     * @param commits {@code GET .../commits/{sha}} bodies; a sha without an entry is an unknown commit
+     * @param pulls {@code GET .../commits/{sha}/pulls} bodies
+     * @param expected the deployments of {@code service} in {@code [since, until]}, newest first
+     */
+    public record GitHubDeployments(String body, Map<String, JsonNode> commits, Map<String, JsonNode> pulls,
+            List<GitHubChange> expected) {
+
+        public GitHubDeployments {
+            commits = Map.copyOf(commits);
+            pulls = Map.copyOf(pulls);
+            expected = List.copyOf(expected);
+        }
+    }
+
+    /**
+     * A GitHub {@code deployments} array of 0 to 14 deployments shaped like the Fake GitHub's (CP-60).
+     *
+     * <p>Services are drawn from the three demo services (about half are {@code service}); about 1 in 10 has no
+     * {@code payload}. Times are distinct whole seconds from 6 hours before {@code since} to 2 hours after
+     * {@code until}, sometimes exactly {@code since} or {@code until}. {@code payload.version} is omitted in about 1
+     * case in 4 (the version is then {@code ref}). Each commit has 0 to {@code maxFiles + 5} files and is unknown
+     * (no body) in about 1 case in 5. The array is newest first, shuffled in about 1 case in 5.
+     */
+    public static GitHubDeployments githubDeployments(SplittableRandom r, String service, Instant since,
+            Instant until, int maxFiles) {
+        int count = r.nextInt(15);
+        long from = since.getEpochSecond() - 6 * 3600;
+        long to = until.getEpochSecond() + 2 * 3600;
+        Set<Long> used = new HashSet<>();
+        List<ObjectNode> deployments = new ArrayList<>();
+        Map<String, JsonNode> commits = new HashMap<>();
+        Map<String, JsonNode> pulls = new HashMap<>();
+        List<GitHubChange> expected = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            long seconds;
+            do {
+                seconds = switch (r.nextInt(10)) {
+                    case 0 -> since.getEpochSecond();
+                    case 1 -> until.getEpochSecond();
+                    default -> r.nextLong(from, to + 1);
+                };
+            } while (!used.add(seconds));
+            Instant at = Instant.ofEpochSecond(seconds);
+            String svc = r.nextBoolean() ? service : TEMPO_SERVICES[r.nextInt(TEMPO_SERVICES.length)];
+            String version = "v2." + r.nextInt(30) + "." + i;
+            String sha = String.format("%016x%016x%08x", r.nextLong(), r.nextLong(), i);
+            ObjectNode d = JSON.createObjectNode().put("id", 1_000_000 + i).put("sha", sha)
+                    .put("ref", svc + "-" + version).put("task", "deploy");
+            boolean hasPayload = r.nextInt(10) != 0;
+            boolean hasVersion = r.nextInt(4) != 0;
+            if (hasPayload) {
+                ObjectNode payload = d.putObject("payload").put("service", svc);
+                if (hasVersion) {
+                    payload.put("version", version);
+                }
+            }
+            d.put("environment", "production").put("created_at", at.toString()).put("updated_at", at.toString());
+            d.putObject("creator").put("login", "dev-" + r.nextInt(5)).put("type", "User");
+            deployments.add(d);
+
+            List<String> files = new ArrayList<>();
+            if (r.nextInt(5) != 0) {
+                ObjectNode commit = JSON.createObjectNode().put("sha", sha)
+                        .put("html_url", "https://github.com/o/r/commit/" + sha);
+                commit.putObject("commit").put("message", "Change " + i + " (#" + (1000 + i) + ")\n\nbody");
+                ArrayNode fileArray = commit.putArray("files");
+                int fileCount = r.nextInt(maxFiles + 6);
+                for (int f = 0; f < fileCount; f++) {
+                    String name = svc + "/src/File" + i + "_" + f + ".java";
+                    fileArray.addObject().put("filename", name).put("status", "modified");
+                    if (files.size() < maxFiles) {
+                        files.add(name);
+                    }
+                }
+                commits.put(sha, commit);
+                ArrayNode prs = JSON.createArrayNode();
+                if (r.nextBoolean()) {
+                    prs.addObject().put("number", 1000 + i).put("title", "Change " + i)
+                            .put("html_url", "https://github.com/o/r/pull/" + (1000 + i))
+                            .put("merged_at", at.minusSeconds(60).toString());
+                }
+                pulls.put(sha, prs);
+            }
+            if (hasPayload && svc.equals(service) && !at.isBefore(since) && !at.isAfter(until)) {
+                expected.add(new GitHubChange(hasVersion ? version : svc + "-" + version, at, files));
+            }
+        }
+        deployments.sort(Comparator.comparing((ObjectNode d) -> d.path("created_at").asText()).reversed());
+        if (r.nextInt(5) == 0) {
+            Collections.shuffle(deployments, new Random(r.nextLong()));
+        }
+        expected.sort(Comparator.comparing(GitHubChange::deployedAt).reversed());
+        try {
+            return new GitHubDeployments(JSON.writeValueAsString(JSON.createArrayNode().addAll(deployments)),
+                    commits, pulls, expected);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException(e);
         }
