@@ -24,6 +24,7 @@ public final class InvestigationContext {
     private final Instant anchor;
     private final int budget;
     private final long maxLlmTokens;
+    private final String scenario;
     private final AtomicInteger used = new AtomicInteger();
     private final AtomicBoolean budgetExhausted = new AtomicBoolean();
     private final AtomicBoolean accepting = new AtomicBoolean();
@@ -58,6 +59,26 @@ public final class InvestigationContext {
             Instant anchor,
             int budget,
             long maxLlmTokens) {
+        this(incidentId, windowStart, windowEnd, deadline, traceId, alertEvidenceId, anchor, budget, maxLlmTokens,
+                null);
+    }
+
+    /**
+     * @param scenario the Incident's {@code scenario} label value, or null; selects the mock scenario
+     *     (reliability Req 10.1)
+     */
+    public InvestigationContext(
+            String incidentId,
+            Instant windowStart,
+            Instant windowEnd,
+            Instant deadline,
+            String traceId,
+            String alertEvidenceId,
+            Instant anchor,
+            int budget,
+            long maxLlmTokens,
+            String scenario) {
+        this.scenario = scenario;
         this.incidentId = Objects.requireNonNull(incidentId, "incidentId");
         this.windowStart = Objects.requireNonNull(windowStart, "windowStart");
         this.windowEnd = Objects.requireNonNull(windowEnd, "windowEnd");
@@ -110,6 +131,11 @@ public final class InvestigationContext {
         return budget;
     }
 
+    /** The Incident's {@code scenario} label value, or null when it has none. */
+    public String scenario() {
+        return scenario;
+    }
+
     /** Tool invocations counted so far, including rejected ones (Req 11.10). */
     public AtomicInteger used() {
         return used;
@@ -151,7 +177,7 @@ public final class InvestigationContext {
     public String toString() {
         return "InvestigationContext[incidentId=" + incidentId + ", windowStart=" + windowStart
                 + ", windowEnd=" + windowEnd + ", deadline=" + deadline + ", traceId=" + traceId
-                + ", anchor=" + anchor + ", budget=" + budget + ", used=" + used.get()
+                + ", anchor=" + anchor + ", scenario=" + scenario + ", budget=" + budget + ", used=" + used.get()
                 + ", budgetExhausted=" + budgetExhausted.get() + ", accepting=" + accepting.get()
                 + ", maxLlmTokens=" + maxLlmTokens + ", llmTokens=" + llmTokens.get() + "]";
     }

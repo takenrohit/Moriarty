@@ -26,9 +26,19 @@ import java.util.regex.Pattern;
  * 180 ms to 5000 ms at {@code a−3m} (20:07 IST); from {@code a−2m} (20:08 IST) the checkout-api 5xx
  * ratio is 0.12 instead of 0.002, checkout-api logs {@code PaymentGatewayTimeoutException} every 2 s
  * (214 entries), and traces fail in the {@code payment-gateway → payment-provider} call. Every other
- * service, and every other metric kind, returns a healthy baseline.
+ * service, and every other metric kind, returns a healthy baseline. This is {@link ScenarioKind#PAYMENT_GATEWAY},
+ * the default ({@link #forAnchor(Instant)}).
  *
- * <p>The class is pure: results depend only on the anchor and the arguments. Every timestamp is
+ * <p>The other kinds of the Scenario_Library (Req 10.3, CP-75), all failing in checkout-api:
+ * {@link ScenarioKind#BAD_DEPLOY} (v2.14.3 at {@code a−14m} changes {@code PaymentClient}/{@code RetryPolicy};
+ * from {@code a−12m} 5xx 0.12, {@code NullPointerException at PaymentClient.authorize} logs and failing
+ * spans inside checkout-api; payment-gateway healthy), {@link ScenarioKind#DB_POOL_EXHAUSTION} (from
+ * {@code a−5m} 5xx 0.08, p99 30 s, HikariPool timeout logs, failing {@code checkout-api → postgres}
+ * spans; last deploy {@code a−26h}) and {@link ScenarioKind#NOISY_NEIGHBOUR} (from {@code a−6m} p99
+ * 2400 ms and CPU/throttling ratio 0.97, GC-overhead and slow-request WARN logs, slow but error-free
+ * traces with a fast payment-gateway call; last deploy {@code a−26h}).
+ *
+ * <p>The class is pure: results depend only on the kind, the anchor and the arguments. Every timestamp is
  * {@code a + offset} or {@code start + k·step}, so shifting the anchor and the query range by {@code d}
  * shifts the output by {@code d} (Req 8.10). Every result is filtered to the queried range, bounds
  * inclusive (Req 8.11).
@@ -69,6 +79,34 @@ public final class MockScenario {
     public static final Duration FAILED_TRACE_INTERVAL = Duration.ofSeconds(6);
     public static final Duration FAILED_TRACE_DURATION = Duration.ofMillis(5020);
 
+    // BAD_DEPLOY: checkout-api v2.14.3 (a−14m) breaks the payment client; errors from a−12m.
+    public static final Duration BAD_DEPLOY_ERROR_ONSET = Duration.ofMinutes(-12);
+    public static final List<String> BAD_DEPLOY_FILES = List.of(
+            "src/main/java/com/example/checkout/payment/PaymentClient.java",
+            "src/main/java/com/example/checkout/payment/RetryPolicy.java");
+    public static final String NPE_MESSAGE =
+            "NullPointerException at PaymentClient.authorize(PaymentClient.java:87)";
+    public static final int NPE_LOG_COUNT = 330;
+    public static final Duration NPE_LOG_INTERVAL = Duration.ofSeconds(4);
+
+    // DB_POOL_EXHAUSTION: checkout-api waits for database connections from a−5m; no recent deploy.
+    public static final Duration DB_POOL_ONSET = Duration.ofMinutes(-5);
+    public static final double DB_POOL_ERROR_RATIO = 0.08;
+    public static final double DB_POOL_P99_MS = 30000;
+    public static final String HIKARI_MESSAGE =
+            "HikariPool-1 - Connection is not available, request timed out after 30000ms";
+    public static final int HIKARI_LOG_COUNT = 150;
+    public static final Duration HIKARI_LOG_INTERVAL = Duration.ofSeconds(6);
+    public static final String POSTGRES = "postgres";
+
+    // NOISY_NEIGHBOUR: checkout-api is CPU-throttled from a−6m; dependencies healthy; no recent deploy.
+    public static final Duration CPU_ONSET = Duration.ofMinutes(-6);
+    public static final double CPU_HEALTHY = 0.15;
+    public static final double CPU_INCIDENT = 0.97;
+    public static final double NOISY_P99_MS = 2400;
+    public static final String GC_MESSAGE = "GC overhead high: 41% of CPU time spent in garbage collection";
+    public static final String SLOW_REQUEST_MESSAGE = "slow request POST /checkout took 2400 ms";
+
     private static final Pattern LINE_FILTER = Pattern.compile("\\|=\\s*(?:\"((?:[^\"\\\\]|\\\\.)*)\"|`([^`]*)`)");
 
     private static final List<SpanRecord> FAILED_TRACE_SPANS = List.of(
@@ -76,15 +114,41 @@ public final class MockScenario {
             new SpanRecord(PAYMENT_GATEWAY, "POST /charge", null, Duration.ofMillis(5010), true),
             new SpanRecord(PAYMENT_GATEWAY, "POST /authorize", PAYMENT_PROVIDER, Duration.ofMillis(5000), true));
 
+    private static final TraceShape PAYMENT_GATEWAY_TRACES = new TraceShape(List.of(CHECKOUT_API, PAYMENT_GATEWAY),
+            ERROR_ONSET, FAILED_TRACE_DURATION, true, FAILED_TRACE_SPANS);
+    private static final TraceShape BAD_DEPLOY_TRACES = new TraceShape(List.of(CHECKOUT_API),
+            BAD_DEPLOY_ERROR_ONSET, Duration.ofMillis(45), true, List.of(
+                    new SpanRecord(CHECKOUT_API, "POST /checkout", null, Duration.ofMillis(45), true),
+                    new SpanRecord(CHECKOUT_API, "PaymentClient.authorize", null, Duration.ofMillis(3), true)));
+    private static final TraceShape DB_POOL_TRACES = new TraceShape(List.of(CHECKOUT_API),
+            DB_POOL_ONSET, Duration.ofMillis(30020), true, List.of(
+                    new SpanRecord(CHECKOUT_API, "POST /checkout", null, Duration.ofMillis(30020), true),
+                    new SpanRecord(CHECKOUT_API, "SELECT orders", POSTGRES, Duration.ofMillis(30000), true)));
+    private static final TraceShape NOISY_TRACES = new TraceShape(List.of(CHECKOUT_API),
+            CPU_ONSET, Duration.ofMillis(2400), false, List.of(
+                    new SpanRecord(CHECKOUT_API, "POST /checkout", null, Duration.ofMillis(2400), false),
+                    new SpanRecord(PAYMENT_GATEWAY, "POST /charge", null, Duration.ofMillis(150), false)));
+
+    private final ScenarioKind kind;
     private final Instant anchor;
 
-    private MockScenario(Instant anchor) {
+    private MockScenario(ScenarioKind kind, Instant anchor) {
+        this.kind = Objects.requireNonNull(kind, "kind");
         this.anchor = Objects.requireNonNull(anchor, "anchor");
     }
 
-    /** The scenario anchored at {@code anchor} (normally the Incident's {@code detectedAt}). */
+    /** The default payment-gateway scenario anchored at {@code anchor} (normally the Incident's {@code detectedAt}). */
     public static MockScenario forAnchor(Instant anchor) {
-        return new MockScenario(anchor);
+        return new MockScenario(ScenarioKind.DEFAULT, anchor);
+    }
+
+    /** The {@code kind} scenario anchored at {@code anchor}; pure in {@code (kind, anchor)} (Req 10.5). */
+    public static MockScenario forAnchor(ScenarioKind kind, Instant anchor) {
+        return new MockScenario(kind, anchor);
+    }
+
+    public ScenarioKind kind() {
+        return kind;
     }
 
     public Instant anchor() {
@@ -97,11 +161,13 @@ public final class MockScenario {
         ERROR_RATIO,
         /** Query contains {@code histogram_quantile}, {@code latency} or {@code duration}; values in ms. */
         LATENCY_P99,
+        /** Query contains {@code cpu} or {@code throttl}; values are a 0..1 usage/throttling ratio. */
+        CPU,
         /** Any other query. */
         REQUEST_RATE
     }
 
-    /** Classifies a PromQL query; error-ratio patterns take precedence over latency patterns. */
+    /** Classifies a PromQL query; error-ratio patterns take precedence over latency, then CPU patterns. */
     public static MetricKind classify(String promql) {
         String q = Objects.requireNonNull(promql, "promql").toLowerCase(Locale.ROOT);
         if (q.contains("5..") || q.contains("5xx") || q.contains("status=~\"5")) {
@@ -109,6 +175,9 @@ public final class MockScenario {
         }
         if (q.contains("histogram_quantile") || q.contains("latency") || q.contains("duration")) {
             return MetricKind.LATENCY_P99;
+        }
+        if (q.contains("cpu") || q.contains("throttl")) {
+            return MetricKind.CPU;
         }
         return MetricKind.REQUEST_RATE;
     }
@@ -161,21 +230,56 @@ public final class MockScenario {
         return min.compareTo(requested) < 0 ? requested : min;
     }
 
-    private double value(String service, MetricKind kind, Instant t) {
+    private double value(String service, MetricKind metric, Instant t) {
+        boolean checkout = CHECKOUT_API.equals(service);
         switch (kind) {
-            case ERROR_RATIO:
-                if (CHECKOUT_API.equals(service)) {
-                    return t.isBefore(anchor.plus(ERROR_ONSET)) ? ERROR_RATIO_HEALTHY : ERROR_RATIO_INCIDENT;
+            case PAYMENT_GATEWAY:
+                if (metric == MetricKind.ERROR_RATIO && checkout) {
+                    return after(ERROR_ONSET, t) ? ERROR_RATIO_INCIDENT : ERROR_RATIO_HEALTHY;
                 }
-                return ERROR_RATIO_HEALTHY;
-            case LATENCY_P99:
-                if (PAYMENT_GATEWAY.equals(service)) {
-                    return t.isBefore(anchor.plus(LATENCY_ONSET)) ? GATEWAY_P99_HEALTHY_MS : GATEWAY_P99_INCIDENT_MS;
+                if (metric == MetricKind.LATENCY_P99 && PAYMENT_GATEWAY.equals(service)) {
+                    return after(LATENCY_ONSET, t) ? GATEWAY_P99_INCIDENT_MS : GATEWAY_P99_HEALTHY_MS;
                 }
-                return BASELINE_P99_MS;
+                break;
+            case BAD_DEPLOY:
+                if (metric == MetricKind.ERROR_RATIO && checkout) {
+                    return after(BAD_DEPLOY_ERROR_ONSET, t) ? ERROR_RATIO_INCIDENT : ERROR_RATIO_HEALTHY;
+                }
+                break;
+            case DB_POOL_EXHAUSTION:
+                if (metric == MetricKind.ERROR_RATIO && checkout) {
+                    return after(DB_POOL_ONSET, t) ? DB_POOL_ERROR_RATIO : ERROR_RATIO_HEALTHY;
+                }
+                if (metric == MetricKind.LATENCY_P99 && checkout) {
+                    return after(DB_POOL_ONSET, t) ? DB_POOL_P99_MS : BASELINE_P99_MS;
+                }
+                break;
+            case NOISY_NEIGHBOUR:
+                if (metric == MetricKind.LATENCY_P99 && checkout) {
+                    return after(CPU_ONSET, t) ? NOISY_P99_MS : BASELINE_P99_MS;
+                }
+                if (metric == MetricKind.CPU && checkout) {
+                    return after(CPU_ONSET, t) ? CPU_INCIDENT : CPU_HEALTHY;
+                }
+                break;
             default:
-                return BASELINE_REQUEST_RATE;
+                throw new IllegalStateException("unknown scenario " + kind);
         }
+        return baseline(service, metric);
+    }
+
+    /** True when {@code t} is at or after {@code a + offset}. */
+    private boolean after(Duration offset, Instant t) {
+        return !t.isBefore(anchor.plus(offset));
+    }
+
+    private static double baseline(String service, MetricKind metric) {
+        return switch (metric) {
+            case ERROR_RATIO -> ERROR_RATIO_HEALTHY;
+            case LATENCY_P99 -> PAYMENT_GATEWAY.equals(service) ? GATEWAY_P99_HEALTHY_MS : BASELINE_P99_MS;
+            case CPU -> CPU_HEALTHY;
+            case REQUEST_RATE -> BASELINE_REQUEST_RATE;
+        };
     }
 
     /**
@@ -193,12 +297,7 @@ public final class MockScenario {
             throw new IllegalArgumentException("limit must be at least 1");
         }
         List<String> filters = lineFilters(logql);
-        List<LogStream> streams = CHECKOUT_API.equals(service)
-                ? List.of(
-                        new LogStream(ERROR_ONSET, TIMEOUT_LOG_INTERVAL, TIMEOUT_LOG_COUNT, "ERROR", TIMEOUT_MESSAGE),
-                        new LogStream(INFO_LOG_START, INFO_LOG_INTERVAL, Long.MAX_VALUE, "INFO", CHECKOUT_INFO_MESSAGE))
-                : List.of(new LogStream(INFO_LOG_START, INFO_LOG_INTERVAL, Long.MAX_VALUE, "INFO",
-                        BASELINE_INFO_MESSAGE));
+        List<LogStream> streams = logStreams(service);
 
         long[] next = new long[streams.size()];
         for (int i = 0; i < streams.size(); i++) {
@@ -236,6 +335,27 @@ public final class MockScenario {
         }
     }
 
+    private List<LogStream> logStreams(String service) {
+        if (!CHECKOUT_API.equals(service)) {
+            return List.of(new LogStream(INFO_LOG_START, INFO_LOG_INTERVAL, Long.MAX_VALUE, "INFO",
+                    BASELINE_INFO_MESSAGE));
+        }
+        LogStream info = new LogStream(INFO_LOG_START, INFO_LOG_INTERVAL, Long.MAX_VALUE, "INFO",
+                CHECKOUT_INFO_MESSAGE);
+        return switch (kind) {
+            case PAYMENT_GATEWAY -> List.of(
+                    new LogStream(ERROR_ONSET, TIMEOUT_LOG_INTERVAL, TIMEOUT_LOG_COUNT, "ERROR", TIMEOUT_MESSAGE), info);
+            case BAD_DEPLOY -> List.of(
+                    new LogStream(BAD_DEPLOY_ERROR_ONSET, NPE_LOG_INTERVAL, NPE_LOG_COUNT, "ERROR", NPE_MESSAGE), info);
+            case DB_POOL_EXHAUSTION -> List.of(
+                    new LogStream(DB_POOL_ONSET, HIKARI_LOG_INTERVAL, HIKARI_LOG_COUNT, "ERROR", HIKARI_MESSAGE), info);
+            case NOISY_NEIGHBOUR -> List.of(
+                    new LogStream(CPU_ONSET, Duration.ofSeconds(30), 32, "WARN", GC_MESSAGE),
+                    new LogStream(CPU_ONSET.plusSeconds(5), Duration.ofSeconds(10), 96, "WARN", SLOW_REQUEST_MESSAGE),
+                    info);
+        };
+    }
+
     /** The {@code |=} filter texts of a LogQL query, unescaped. */
     static List<String> lineFilters(String logql) {
         if (logql == null) {
@@ -261,8 +381,8 @@ public final class MockScenario {
 
     /**
      * Problem traces starting in {@code [start, end]}: traces with an error, or lasting at least
-     * {@code slowThreshold}. checkout-api and payment-gateway see the 60 failed traces of the scenario;
-     * other services have none. Trace IDs depend only on the trace index.
+     * {@code slowThreshold}. In the default scenario checkout-api and payment-gateway see the 60 failed
+     * traces; in the others only checkout-api sees its 60 problem traces; other services have none. Trace IDs depend only on the trace index.
      */
     public TraceSearchResult traces(String service, Instant start, Instant end, Duration slowThreshold, int limit) {
         Objects.requireNonNull(service, "service");
@@ -271,16 +391,22 @@ public final class MockScenario {
         if (limit < 1) {
             throw new IllegalArgumentException("limit must be at least 1");
         }
-        if (!CHECKOUT_API.equals(service) && !PAYMENT_GATEWAY.equals(service)) {
+        TraceShape shape = switch (kind) {
+            case PAYMENT_GATEWAY -> PAYMENT_GATEWAY_TRACES;
+            case BAD_DEPLOY -> BAD_DEPLOY_TRACES;
+            case DB_POOL_EXHAUSTION -> DB_POOL_TRACES;
+            case NOISY_NEIGHBOUR -> NOISY_TRACES;
+        };
+        if (!shape.services().contains(service)) {
             return new TraceSearchResult(List.of(), false);
         }
         List<TraceRecord> traces = new ArrayList<>();
         for (int i = 0; i < FAILED_TRACE_COUNT; i++) {
-            Instant at = anchor.plus(ERROR_ONSET).plus(FAILED_TRACE_INTERVAL.multipliedBy(i));
+            Instant at = anchor.plus(shape.onset()).plus(FAILED_TRACE_INTERVAL.multipliedBy(i));
             if (at.isBefore(start) || at.isAfter(end)) {
                 continue;
             }
-            TraceRecord trace = new TraceRecord(traceId(i), at, FAILED_TRACE_DURATION, true, FAILED_TRACE_SPANS);
+            TraceRecord trace = new TraceRecord(traceId(i), at, shape.duration(), shape.error(), shape.spans());
             if (!trace.error() && trace.duration().compareTo(slowThreshold) < 0) {
                 continue;
             }
@@ -304,15 +430,24 @@ public final class MockScenario {
         if (!CHECKOUT_API.equals(service)) {
             return List.of();
         }
-        List<ChangeRecord> all = List.of(
-                new ChangeRecord(CHECKOUT_API, "v2.14.3", anchor.plus(DEPLOY_OFFSET), "dev-alice",
-                        "Update order confirmation copy", "https://github.com/example/checkout-api/pull/1423",
-                        List.of("src/main/resources/messages.properties",
-                                "src/main/resources/templates/order-confirmation.html")),
-                new ChangeRecord(CHECKOUT_API, "v2.14.2", anchor.plus(PREVIOUS_DEPLOY_OFFSET), "dev-bob",
-                        "Add order history pagination", "https://github.com/example/checkout-api/pull/1398",
-                        List.of("src/main/java/com/example/checkout/orders/OrderHistoryController.java",
-                                "src/main/resources/templates/order-history.html")));
+        ChangeRecord previous = new ChangeRecord(CHECKOUT_API, "v2.14.2", anchor.plus(PREVIOUS_DEPLOY_OFFSET),
+                "dev-bob", "Add order history pagination", "https://github.com/example/checkout-api/pull/1398",
+                List.of("src/main/java/com/example/checkout/orders/OrderHistoryController.java",
+                        "src/main/resources/templates/order-history.html"));
+        List<ChangeRecord> all = switch (kind) {
+            case PAYMENT_GATEWAY -> List.of(
+                    new ChangeRecord(CHECKOUT_API, "v2.14.3", anchor.plus(DEPLOY_OFFSET), "dev-alice",
+                            "Update order confirmation copy", "https://github.com/example/checkout-api/pull/1423",
+                            List.of("src/main/resources/messages.properties",
+                                    "src/main/resources/templates/order-confirmation.html")),
+                    previous);
+            case BAD_DEPLOY -> List.of(
+                    new ChangeRecord(CHECKOUT_API, "v2.14.3", anchor.plus(DEPLOY_OFFSET), "dev-alice",
+                            "Refactor payment client retry policy", "https://github.com/example/checkout-api/pull/1427",
+                            BAD_DEPLOY_FILES),
+                    previous);
+            case DB_POOL_EXHAUSTION, NOISY_NEIGHBOUR -> List.of(previous);
+        };
         return all.stream()
                 .filter(c -> !c.deployedAt().isBefore(since) && !c.deployedAt().isAfter(until))
                 .toList();
@@ -324,6 +459,14 @@ public final class MockScenario {
         if (start.isAfter(end)) {
             throw new IllegalArgumentException("start must not be after end");
         }
+    }
+
+    /**
+     * The problem traces of a scenario: {@value #FAILED_TRACE_COUNT} traces every
+     * {@code FAILED_TRACE_INTERVAL} from {@code a + onset}, seen by {@code services}.
+     */
+    private record TraceShape(List<String> services, Duration onset, Duration duration, boolean error,
+            List<SpanRecord> spans) {
     }
 
     /** A periodic log stream: entry {@code k} is at {@code a + first + k·interval}, {@code k < count}. */

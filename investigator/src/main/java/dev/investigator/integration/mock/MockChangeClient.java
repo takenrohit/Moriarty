@@ -19,6 +19,6 @@ public class MockChangeClient implements ChangeClient {
 
     @Override
     public List<ChangeRecord> recentChanges(String service, Instant since, Instant until) {
-        return MockScenario.forAnchor(anchors.currentAnchor()).changes(service, since, until);
+        return MockScenario.forAnchor(anchors.currentScenario(), anchors.currentAnchor()).changes(service, since, until);
     }
 }

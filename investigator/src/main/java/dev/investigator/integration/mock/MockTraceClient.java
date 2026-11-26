@@ -27,7 +27,7 @@ public class MockTraceClient implements TraceClient {
         if (limit < 1) {
             throw new IllegalArgumentException("limit must be at least 1");
         }
-        return MockScenario.forAnchor(anchors.currentAnchor())
+        return MockScenario.forAnchor(anchors.currentScenario(), anchors.currentAnchor())
                 .traces(service, start, end, slowThreshold, Math.min(limit, traceLimit));
     }
 }

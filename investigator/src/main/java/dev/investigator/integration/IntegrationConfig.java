@@ -25,6 +25,9 @@ import org.springframework.context.annotation.Configuration;
  * scanned bean definition, real clients included, while configuration classes are parsed, and the
  * {@code @ConditionalOnMissingBean} conditions of the {@code @Bean} methods below are evaluated later,
  * when those methods are loaded (CP-61). A test that registers a client of its own also replaces the mock.
+ *
+ * <p>The mock clients serve the {@code ScenarioKind} chosen by the {@link ScopeScenarioAnchorProvider}
+ * from the investigation's {@code scenario} label (reliability Req 10.1, 10.2).
  */
 @Configuration(proxyBeanMethods = false)
 public class IntegrationConfig {

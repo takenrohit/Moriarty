@@ -23,6 +23,6 @@ public class MockMetricsClient implements MetricsClient {
 
     @Override
     public MetricSeries queryRange(String service, String promql, Instant start, Instant end, Duration step) {
-        return MockScenario.forAnchor(anchors.currentAnchor()).metric(service, promql, start, end, step, maxPoints);
+        return MockScenario.forAnchor(anchors.currentScenario(), anchors.currentAnchor()).metric(service, promql, start, end, step, maxPoints);
     }
 }

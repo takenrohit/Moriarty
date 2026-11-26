@@ -256,7 +256,7 @@ public class InvestigationOrchestrator {
             Instant deadline = createdAt.plus(properties.budget().timeout());
             InvestigationContext ctx = new InvestigationContext(incidentId, window.start(), window.end(), deadline,
                     traceId, alert.id(), incident.detectedAt(), properties.budget().maxToolCalls(),
-                    properties.budget().maxLlmTokens());
+                    properties.budget().maxLlmTokens(), incident.labels().get("scenario"));
             contexts.register(ctx);
             executor.submit(() -> run(incidentId));
             log.info("investigation created incident_id={} trace_id={} window_start={} window_end={} deadline={}",
