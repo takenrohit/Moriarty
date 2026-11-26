@@ -9,6 +9,6 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties({InvestigatorProperties.class, LlmProperties.class, IntegrationProperties.class,
-        WebhookProperties.class})
+        WebhookProperties.class, SlackProperties.class})
 public class PropertiesConfig {
 }

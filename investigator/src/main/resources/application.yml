@@ -29,6 +29,12 @@ management:
 
 investigator:
   display-timezone: ${INVESTIGATOR_DISPLAY_TIMEZONE:Asia/Kolkata}
+  public-base-url: ${INVESTIGATOR_PUBLIC_URL:http://localhost:8080}   # links in Slack messages
+  slack:                                          # blank token and channel: Slack publishing is off
+    bot-token: ${SLACK_BOT_TOKEN:}
+    signing-secret: ${SLACK_SIGNING_SECRET:}
+    channel-id: ${SLACK_CHANNEL_ID:}
+    api-url: ${SLACK_API_URL:https://slack.com/api}
   window:
     look-back: 60m
     look-ahead: 10m
