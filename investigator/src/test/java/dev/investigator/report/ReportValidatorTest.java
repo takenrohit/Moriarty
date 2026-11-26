@@ -165,6 +165,39 @@ class ReportValidatorTest {
     }
 
     @Test
+    void wellFormedEvidenceIdThatWasNeverStoredIsRejectedAtItsPath() {
+        ReportDraft draft = draft(INC, List.of(timeline(id(1), id(51))),
+                List.of(hypothesis(List.of(id(1)), List.of(id(99)))), List.of(action(1, id(2), id(77))));
+
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations()).containsExactlyInAnyOrder(
+                "$.timeline[0].evidenceIds[1]: " + ReportValidator.UNKNOWN_EVIDENCE,
+                "$.hypotheses[0].contradictingEvidenceIds[0]: " + ReportValidator.UNKNOWN_EVIDENCE,
+                "$.actions[0].evidenceIds[1]: " + ReportValidator.UNKNOWN_EVIDENCE);
+    }
+
+    @Test
+    void foreignIdAbsentFromTheStoreGetsOnlyTheFormatViolation() {
+        ReportDraft draft = draft(INC, List.of(timeline("ev-" + OTHER + "-1")), List.of(), List.of());
+
+        assertThat(validator.validateDraft(draft, INC, KNOWN).violations()).containsExactly(
+                "$.timeline[0].evidenceIds[0]: is not an evidence ID of incident " + INC
+                        + " (expected ev-" + INC + "-<n>)");
+    }
+
+    @Test
+    void finalReportCitingEvidenceThatWasNeverStoredIsRejected() {
+        InvestigationReport report = new InvestigationReport(INC, InvestigationStatus.COMPLETED, "s",
+                new IncidentTimeline(List.of(new TimelineEntry(DETECTED, "d", List.of(id(1))))), List.of(),
+                List.of(new RecommendedAction(1, ActionType.INVESTIGATE, "look", false, List.of(id(1)))),
+                List.of(), List.of(), NOW);
+
+        assertThat(validator.validateReport(report, KNOWN).valid()).isTrue();
+        assertThat(validator.validateReport(report, Set.of(id(2))).violations()).containsExactlyInAnyOrder(
+                "$.timeline.entries[0].evidenceIds[0]: " + ReportValidator.UNKNOWN_EVIDENCE,
+                "$.actions[0].evidenceIds[0]: " + ReportValidator.UNKNOWN_EVIDENCE);
+    }
+
+    @Test
     void anActionMayCiteNoEvidence() {
         ReportDraft draft = draft(INC, List.of(timeline(id(1))), List.of(), List.of(action(1)));
 
