@@ -14,6 +14,7 @@ import dev.investigator.evidence.StoredEvidence;
 import dev.investigator.evidence.TraceSummarizer;
 import dev.investigator.integration.changes.ChangeClient;
 import dev.investigator.integration.changes.ChangeRecord;
+import dev.investigator.integration.http.IntegrationCallException;
 import dev.investigator.integration.logs.LogClient;
 import dev.investigator.integration.logs.LogEntry;
 import dev.investigator.integration.logs.LogSearchResult;
@@ -101,7 +102,10 @@ public class ObservabilityTools {
         this.clock = clock;
     }
 
-    @Tool("Query a metric time series for one service. start/end are ISO-8601 instants, e.g. 2026-11-23T14:00:00Z.")
+    @Tool("Query a metric time series for one service. start/end are ISO-8601 instants, e.g. 2026-11-23T14:00:00Z."
+            + " The PromQL query must return a single series: aggregate with sum(...), e.g."
+            + " sum(rate(http_server_requests_seconds_count{service=\"checkout-api\",status=~\"5..\"}[5m]))"
+            + " / sum(rate(http_server_requests_seconds_count{service=\"checkout-api\"}[5m])).")
     public String getMetric(@ToolMemoryId String incidentId, @P("service") String service,
             @P("PromQL query") String promql, @P("start") String start, @P("end") String end) {
         return invoke("getMetric", incidentId, ctx -> {
@@ -236,7 +240,11 @@ public class ObservabilityTools {
             outcome = Outcome.rejected(e.toResult());
         } catch (RuntimeException e) {
             log.atWarn().addKeyValue(LogFields.TOOL_NAME, toolName).setCause(e).log("tool call failed");
-            outcome = Outcome.failed(ToolResults.error(INTEGRATION_FAILED, INTEGRATION_HINT));
+            // A client hint is a constant text (never the query or backend output), so it is safe to return.
+            String hint = e instanceof IntegrationCallException call && call.hint() != null
+                    ? call.hint()
+                    : INTEGRATION_HINT;
+            outcome = Outcome.failed(ToolResults.error(INTEGRATION_FAILED, hint));
         }
         long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
         logFinished(toolName, outcome, durationMs);

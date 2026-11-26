@@ -78,7 +78,8 @@ class InvestigatorAgentWiringTest {
         ChatRequest first = model.requests().get(0);
         assertThat(first.messages().get(0)).isInstanceOfSatisfying(SystemMessage.class,
                 m -> assertThat(m.text()).contains("You cannot change systems")
-                        .contains("Order hypotheses from most likely to least likely"));
+                        .contains("Order hypotheses from most likely to least likely")
+                        .contains("must return a single series"));
         assertThat(first.messages().get(1)).isInstanceOfSatisfying(UserMessage.class,
                 m -> assertThat(m.singleText()).contains(promptInputs.incidentJson(incident))
                         .contains("\"detectedAt\":\"2026-11-23T14:40:00Z\"")

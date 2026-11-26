@@ -14,6 +14,7 @@ import dev.investigator.evidence.TraceSummarizer;
 import dev.investigator.integration.changes.ChangeClient;
 import dev.investigator.integration.logs.LogClient;
 import dev.investigator.integration.metrics.MetricsClient;
+import dev.investigator.integration.metrics.PrometheusMetricsClient;
 import dev.investigator.integration.traces.TraceClient;
 import dev.investigator.investigation.InvestigationContext;
 import dev.investigator.investigation.InvestigationContextRegistry;
@@ -220,6 +221,28 @@ class ObservabilityToolsSmokeTest {
 
         assertThat(json.get("error").asText()).isEqualTo(ObservabilityTools.INTEGRATION_FAILED);
         assertThat(json.get("hint").asText()).isEqualTo(ObservabilityTools.INTEGRATION_HINT);
+        assertThat(repository.findByIncident(incidentId)).isEmpty();
+    }
+
+    @Test
+    void multiSeriesPrometheusResultTellsTheModelToAggregate() throws Exception {
+        JsonNode twoSeries = mapper.readTree("""
+                {"status":"success","data":{"resultType":"matrix","result":[
+                  {"metric":{"status":"500"},"values":[[1795963200,"1"]]},
+                  {"metric":{"status":"503"},"values":[[1795963200,"2"]]}]}}""");
+        MetricsClient prometheus = (service, promql, start, end, step) ->
+                PrometheusMetricsClient.parse(twoSeries, promql, step, 300);
+        ObservabilityTools withPrometheus = new ObservabilityTools(guard, evidenceService, prometheus,
+                (service, logql, start, end, limit) -> { throw new AssertionError("not called"); },
+                traces, changes, runbooks, metricSummarizer, logSummarizer, traceSummarizer, mapper, properties,
+                clock);
+
+        JsonNode json = mapper.readTree(withPrometheus.getMetric(incidentId, "checkout-api",
+                "http_server_requests_seconds_count{service=\"checkout-api\"}", START, END));
+
+        assertThat(json.get("error").asText()).isEqualTo(ObservabilityTools.INTEGRATION_FAILED);
+        assertThat(json.get("hint").asText()).isEqualTo(PrometheusMetricsClient.SINGLE_SERIES_HINT)
+                .contains("aggregate to a single series with sum(...)");
         assertThat(repository.findByIncident(incidentId)).isEmpty();
     }
 

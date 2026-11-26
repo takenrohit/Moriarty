@@ -48,6 +48,11 @@ public class PrometheusMetricsClient implements MetricsClient {
     static final String INTEGRATION = "metrics";
     static final String QUERY_RANGE_PATH = "/api/v1/query_range";
 
+    /** Hint returned to the model when a query yields more than one series (CP-61). */
+    public static final String SINGLE_SERIES_HINT = "the query returned more than one series; aggregate to a"
+            + " single series with sum(...), for example sum(rate(a[5m])) or a ratio of sums such as"
+            + " sum(rate(a[5m])) / sum(rate(b[5m]))";
+
     /** Reads decimals exactly, so sub-second sample timestamps survive parsing. */
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
@@ -144,8 +149,8 @@ public class PrometheusMetricsClient implements MetricsClient {
             return new MetricSeries(query, step, List.of());
         }
         if (result.size() > 1) {
-            throw new IntegrationCallException(INTEGRATION, "query returned " + result.size()
-                    + " series; aggregate it to one series, for example with sum(...)");
+            throw IntegrationCallException.withHint(INTEGRATION, "query returned " + result.size()
+                    + " series; aggregate to a single series with sum(...)", SINGLE_SERIES_HINT);
         }
         JsonNode values = result.get(0).path("values");
         if (!values.isArray()) {
