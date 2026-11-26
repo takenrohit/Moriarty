@@ -53,6 +53,7 @@ investigator:
   budget:
     max-tool-calls: 15
     timeout: 3m
+    max-llm-tokens: 200000    # Token_Budget: input+output tokens per investigation; then INCONCLUSIVE (Req 6.5)
   tools:
     max-query-length: 1000
     max-symptom-length: 200

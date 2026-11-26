@@ -69,10 +69,14 @@ public record InvestigatorProperties(
         }
     }
 
-    /** Tool_Call_Budget and the overall investigation timeout. */
+    /**
+     * Tool_Call_Budget, the overall investigation timeout and the Token_Budget (input plus output LLM
+     * tokens per investigation, Req 6.5).
+     */
     public record Budget(
             @Min(1) @DefaultValue("15") int maxToolCalls,
-            @NotNull @DurationMin(seconds = 1) @DefaultValue("3m") Duration timeout) {
+            @NotNull @DurationMin(seconds = 1) @DefaultValue("3m") Duration timeout,
+            @Min(1) @DefaultValue("200000") long maxLlmTokens) {
     }
 
     /** Tool_Guard limits and compact summary sizes. */

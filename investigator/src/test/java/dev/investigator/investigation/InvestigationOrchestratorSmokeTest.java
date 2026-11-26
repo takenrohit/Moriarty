@@ -225,7 +225,8 @@ class InvestigationOrchestratorSmokeTest {
         };
         InvestigatorProperties shortTimeout = new InvestigatorProperties(properties.displayTimezone(),
                 properties.window(),
-                new InvestigatorProperties.Budget(properties.budget().maxToolCalls(), Duration.ofMillis(300)),
+                new InvestigatorProperties.Budget(properties.budget().maxToolCalls(), Duration.ofMillis(300),
+                        properties.budget().maxLlmTokens()),
                 properties.tools(), properties.agent(), properties.services(), properties.mock());
         InvestigationOrchestrator shortOrchestrator = new InvestigationOrchestrator(investigations, incidents, reports,
                 evidenceRepository, evidenceService, contexts, blockingAgent, promptInputs, parser, validator,

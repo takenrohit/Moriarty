@@ -388,7 +388,7 @@ class ToolGuardTest {
         return new InvestigatorProperties(
                 ZoneId.of("Asia/Kolkata"),
                 new InvestigatorProperties.Window(Duration.ofMinutes(60), Duration.ofMinutes(10), Duration.ofHours(6)),
-                new InvestigatorProperties.Budget(BUDGET, Duration.ofMinutes(3)),
+                new InvestigatorProperties.Budget(BUDGET, Duration.ofMinutes(3), 200_000),
                 new InvestigatorProperties.Tools(1000, 200, 24, Duration.ofHours(6), 4096, 300,
                         Duration.ofSeconds(15), 500, 5, 50, 3, Duration.ofSeconds(2), 20),
                 new InvestigatorProperties.Agent(64),

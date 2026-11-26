@@ -73,6 +73,9 @@ import org.springframework.stereotype.Component;
  *       {@code INCONCLUSIVE}. Each rejected draft is audited ({@link AuditService#recordDraftRejection});
  *   <li>timeout: fallback report, {@code INCONCLUSIVE}; the agent thread is interrupted;
  *   <li>tool-calling round-trip limit: fallback report, {@code INCONCLUSIVE};
+ *   <li>Token_Budget reached ({@link TokenBudgetChatModel} refused a request, or the budget is used up
+ *       before the correction call): fallback report with a token-budget open question,
+ *       {@code INCONCLUSIVE} (Req 6.5);
  *   <li>any other exception: fallback report, {@code FAILED}.
  * </ul>
  *
@@ -176,7 +179,8 @@ public class InvestigationOrchestrator {
             Evidence alert = evidenceService.storeAlert(incident, traceId);
             Instant deadline = createdAt.plus(properties.budget().timeout());
             InvestigationContext ctx = new InvestigationContext(incidentId, window.start(), window.end(), deadline,
-                    traceId, alert.id(), incident.detectedAt(), properties.budget().maxToolCalls());
+                    traceId, alert.id(), incident.detectedAt(), properties.budget().maxToolCalls(),
+                    properties.budget().maxLlmTokens());
             contexts.register(ctx);
             executor.submit(() -> run(incidentId));
             log.info("investigation created incident_id={} trace_id={} window_start={} window_end={} deadline={}",
@@ -259,6 +263,14 @@ public class InvestigationOrchestrator {
         if (first.valid()) {
             stopAccepting(ctx, concluded);
             return first.outcome();
+        }
+
+        if (ctx.tokenBudgetReached()) {
+            // No correction request once the Token_Budget is used up (Req 6.5).
+            stopAccepting(ctx, concluded);
+            audit.recordDraftRejection(new AuditService.DraftRejection(incidentId, 1, first.errors(),
+                    AuditService.DraftRejection.FALLBACK));
+            return tokenBudgetOutcome(ctx, first.errors());
         }
 
         // One correction round in the same chat memory, with the tools still accepted and the same
@@ -355,6 +367,7 @@ public class InvestigationOrchestrator {
                 log.warn("investigation timed out incident_id={} reason=\"{}\"", incidentId, reason);
                 yield fallbackOutcome(incidentId, InvestigationStatus.INCONCLUSIVE, reason, List.of());
             }
+            case AgentResult.Failed failed when isTokenBudget(failed.cause()) -> tokenBudgetOutcome(ctx, List.of());
             case AgentResult.Failed failed when isRoundTripLimit(failed.cause()) -> {
                 log.warn("agent hit the tool-calling round-trip limit incident_id={}", incidentId);
                 yield fallbackOutcome(incidentId, InvestigationStatus.INCONCLUSIVE, ROUND_TRIP_LIMIT, List.of());
@@ -407,6 +420,30 @@ public class InvestigationOrchestrator {
         log.warn("report draft rejected incident_id={} attempt={} stage=\"{}\" error_count={}", incidentId,
                 attempt, stage, errors.size());
         return new DraftCheck(null, errors);
+    }
+
+    /** Evidence-only {@code INCONCLUSIVE} report naming the Token_Budget as the reason (Req 6.5). */
+    private Outcome tokenBudgetOutcome(InvestigationContext ctx, List<String> details) {
+        log.warn("token budget reached; ending the investigation incident_id={} llm_tokens={} budget={}",
+                ctx.incidentId(), ctx.llmTokens(), ctx.maxLlmTokens());
+        return fallbackOutcome(ctx.incidentId(), InvestigationStatus.INCONCLUSIVE,
+                tokenBudgetQuestion(ctx.maxLlmTokens()), details.stream().limit(MAX_REPORTED_ERRORS).toList());
+    }
+
+    /** Open question of a report ended by the Token_Budget (Req 6.5). */
+    static String tokenBudgetQuestion(long budget) {
+        return "LLM token budget of " + budget + " tokens was reached; the investigation may be incomplete.";
+    }
+
+    /** True if {@code error} or one of its causes is a {@link TokenBudgetExceededException}. */
+    static boolean isTokenBudget(Throwable error) {
+        int depth = 0;
+        for (Throwable t = error; t != null && depth < 10; t = t.getCause(), depth++) {
+            if (t instanceof TokenBudgetExceededException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Open question added when the Tool_Call_Budget was reached (Req 14.4). */

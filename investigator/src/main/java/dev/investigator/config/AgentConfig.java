@@ -1,6 +1,8 @@
 package dev.investigator.config;
 
+import dev.investigator.investigation.InvestigationContextRegistry;
 import dev.investigator.investigation.InvestigatorAgent;
+import dev.investigator.investigation.TokenBudgetChatModel;
 import dev.investigator.tools.ObservabilityTools;
 import dev.investigator.tools.ToolGuard;
 import dev.investigator.tools.ToolResults;
@@ -47,12 +49,14 @@ public class AgentConfig {
 
     @Bean
     InvestigatorAgent investigatorAgent(ObjectProvider<ChatModel> chatModels, ObservabilityTools tools,
-            ToolGuard guard, InvestigatorProperties properties) {
+            ToolGuard guard, InvestigatorProperties properties, InvestigationContextRegistry contexts) {
         ChatModel chatModel = chatModels.getIfAvailable();
         if (chatModel == null) {
             log.warn("{} Investigations will fail until a ChatModel is configured.", NO_CHAT_MODEL);
             chatModel = new UnavailableChatModel();
         }
+        // Token_Budget per investigation (Req 6.5): refuses requests once the budget is reached.
+        chatModel = new TokenBudgetChatModel(chatModel, contexts);
         int maxMessages = properties.agent().memoryMaxMessages();
         String unknownToolResult = ToolResults.error(UNKNOWN_TOOL, "use one of: " + String.join(", ", toolNames()));
         return AiServices.builder(InvestigatorAgent.class)
