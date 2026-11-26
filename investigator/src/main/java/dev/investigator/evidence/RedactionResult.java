@@ -17,8 +17,11 @@ import java.util.Set;
  */
 public record RedactionResult(Map<String, Object> payload, Set<String> categories, String status) {
 
-    /** Status reported by {@link PassThroughRedactor}. */
+    /** Status when nothing was redacted, and always from {@link PassThroughRedactor}. */
     public static final String NOT_APPLIED = "not_applied";
+
+    /** Status when {@link RegexRedactor} replaced at least one value (Req 5.2). */
+    public static final String APPLIED = "applied";
 
     public RedactionResult {
         Objects.requireNonNull(payload, "payload");

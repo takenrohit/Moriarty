@@ -5,8 +5,8 @@ import java.util.Map;
 /**
  * Redaction seam applied to every Evidence payload before it is stored (Req 9.9, CP-8).
  *
- * <p>Phase 1 ships {@link PassThroughRedactor}; Phase 3 (NFR-5) replaces the bean with a real
- * implementation without changing {@link EvidenceService}.
+ * <p>The active bean is {@link RegexRedactor} (NFR-5); {@link PassThroughRedactor} is a no-op kept for
+ * tests. {@link EvidenceService} depends only on this interface.
  */
 public interface Redactor {
 
