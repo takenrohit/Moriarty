@@ -1,10 +1,17 @@
 package dev.investigator.testsupport;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.investigator.integration.logs.LogEntry;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Random;
 import java.util.SplittableRandom;
 
@@ -14,7 +21,8 @@ import java.util.SplittableRandom;
  * expected parse result.
  *
  * <p>Prometheus: {@link #prometheusMatrix} builds a {@code query_range} matrix body with a single series, as
- * the client requires (CP-61). Loki, Tempo and GitHub generators are added by later tasks.
+ * the client requires (CP-61). Loki: {@link #lokiStreams} builds a {@code query_range} streams body. Tempo
+ * and GitHub generators are added by later tasks.
  */
 public final class ResponseGenerators {
 
@@ -23,6 +31,13 @@ public final class ResponseGenerators {
 
     private static final String[] NON_FINITE = {"NaN", "+Inf", "-Inf"};
     private static final String[] LABEL_NAMES = {"service", "status", "instance", "job", "le"};
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String[] LOKI_LEVELS = {"debug", "info", "warn", "error", "fatal"};
+    private static final String[] LOG_LINES = {
+        "PaymentGatewayTimeoutException: call to payment-gateway timed out after 5000 ms",
+        "checkout completed", "request completed", "", "  padded line  ", "quote \" and backslash \\ inside",
+        "unicode: café ✓ 漢字", "tab\tand\nnewline", "{\"json\":\"line\",\"n\":1}"};
 
     private ResponseGenerators() {
     }
@@ -86,6 +101,82 @@ public final class ResponseGenerators {
         }
         body.append("]}]}}");
         return new PromMatrix(body.toString(), samples);
+    }
+
+    /**
+     * A Loki {@code query_range} success body and the entries it contains.
+     *
+     * @param body the JSON response body
+     * @param entries every entry in the body with the time, level and line a correct client must produce,
+     *     sorted by time (times are distinct)
+     */
+    public record LokiStreams(String body, List<LogEntry> entries) {
+
+        public LokiStreams {
+            entries = List.copyOf(entries);
+        }
+    }
+
+    /**
+     * A Loki {@code query_range} streams body with 0 to 4 streams.
+     *
+     * <p>The total entry count is 0, 1, {@code limit − 1}, {@code limit}, {@code limit + 1} or random in
+     * {@code [0, limit + 20]}, spread randomly over the streams. Times are distinct nanosecond timestamps;
+     * each stream lists its values in ascending order (as {@code direction=forward} does), reversed in about
+     * 1 stream in 5. A stream carries a lower-case {@code detected_level} label in about half the cases;
+     * otherwise a value may carry {@code severity_text} as a third, structured-metadata element. Expected
+     * levels are upper-cased, or {@code UNKNOWN} when neither is present.
+     */
+    public static LokiStreams lokiStreams(SplittableRandom r, int limit) {
+        int count = sampleCount(r, limit);
+        int streamCount = count == 0 ? r.nextInt(2) : r.nextInt(1, 5);
+        List<List<long[]>> perStream = new ArrayList<>();
+        for (int s = 0; s < streamCount; s++) {
+            perStream.add(new ArrayList<>());
+        }
+        // Each value: {nanos, line index, metadata level index or -1}.
+        long nanos = (ANCHOR_SECONDS - r.nextLong(0, 86_400)) * 1_000_000_000L + r.nextLong(0, 1_000_000_000L);
+        for (int i = 0; i < count; i++) {
+            nanos += 1 + r.nextLong(0, 60_000_000_000L);
+            perStream.get(r.nextInt(streamCount)).add(new long[] {nanos, r.nextInt(LOG_LINES.length),
+                    r.nextInt(3) == 0 ? r.nextInt(LOKI_LEVELS.length) : -1});
+        }
+
+        ObjectNode root = JSON.createObjectNode().put("status", "success");
+        ObjectNode data = root.putObject("data").put("resultType", "streams");
+        ArrayNode result = data.putArray("result");
+        List<LogEntry> entries = new ArrayList<>(count);
+        for (List<long[]> values : perStream) {
+            ObjectNode stream = result.addObject();
+            ObjectNode labels = stream.putObject("stream").put("service_name", "checkout-api");
+            String streamLevel = r.nextBoolean() ? LOKI_LEVELS[r.nextInt(LOKI_LEVELS.length)] : null;
+            if (streamLevel != null) {
+                labels.put("detected_level", streamLevel);
+            }
+            if (r.nextInt(5) == 0) {
+                Collections.reverse(values);
+            }
+            ArrayNode array = stream.putArray("values");
+            for (long[] v : values) {
+                String line = LOG_LINES[(int) v[1]];
+                ArrayNode pair = array.addArray().add(Long.toString(v[0])).add(line);
+                String level = streamLevel;
+                if (v[2] >= 0) {
+                    String metadataLevel = LOKI_LEVELS[(int) v[2]];
+                    pair.addObject().put("severity_text", metadataLevel);
+                    level = level == null ? metadataLevel : level;
+                }
+                entries.add(new LogEntry(Instant.ofEpochSecond(v[0] / 1_000_000_000L, v[0] % 1_000_000_000L),
+                        level == null ? "UNKNOWN" : level.toUpperCase(Locale.ROOT), line));
+            }
+        }
+        data.putObject("stats");
+        entries.sort(Comparator.comparing(LogEntry::at));
+        try {
+            return new LokiStreams(JSON.writeValueAsString(root), entries);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private static int sampleCount(SplittableRandom r, int maxPoints) {
