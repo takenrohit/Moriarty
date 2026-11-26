@@ -43,7 +43,8 @@ x-mock-otel-env: &mock-otel-env
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
   OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
   OTEL_TRACES_EXPORTER: otlp
-  OTEL_METRICS_EXPORTER: otlp
+  # Prometheus scrapes /actuator/prometheus directly; the agent exports traces and logs only (CP-59).
+  OTEL_METRICS_EXPORTER: none
   OTEL_LOGS_EXPORTER: otlp
 
 services:

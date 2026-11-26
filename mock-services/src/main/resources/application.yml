@@ -1,0 +1,34 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: mock-services
+  threads:
+    virtual:
+      enabled: true
+
+mock:
+  # checkout | gateway | provider (CP-56)
+  role: ${APP_ROLE:provider}
+  downstream-url: ${DOWNSTREAM_URL:http://localhost:8080}
+  # The gateway gives up on the provider after this long and returns 504.
+  gateway-read-timeout: ${GATEWAY_READ_TIMEOUT:2s}
+  # Checkout waits longer than the gateway so it sees the gateway's 504 rather than its own timeout.
+  checkout-read-timeout: ${CHECKOUT_READ_TIMEOUT:5s}
+  loadgen:
+    # Only takes effect in the checkout role (CP-58).
+    enabled: ${LOADGEN_ENABLED:true}
+    interval-ms: ${LOADGEN_INTERVAL_MS:500}
+    initial-delay-ms: ${LOADGEN_INITIAL_DELAY_MS:10000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      # http_server_requests_seconds_count already carries status and outcome; this adds the service.
+      service: ${OTEL_SERVICE_NAME:mock-${mock.role}}
