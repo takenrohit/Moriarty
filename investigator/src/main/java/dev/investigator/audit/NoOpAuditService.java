@@ -29,4 +29,8 @@ public class NoOpAuditService implements AuditService {
     @Override
     public void recordApproval(Approval approval) {
     }
+
+    @Override
+    public void recordDraftRejection(DraftRejection rejection) {
+    }
 }

@@ -123,7 +123,9 @@ class InvestigationOrchestratorSmokeTest {
     @Test
     void unparseableDraftGivesInconclusiveFallbackListingTheErrors() throws Exception {
         Incident incident = newIncident();
-        model.enqueue(finalAnswer("{\"incidentId\": \"" + incident.id() + "\", \"surprise\": 1}"));
+        // The same invalid draft twice: the first answer and the correction (Req 4.3, 4.4).
+        String unparseable = "{\"incidentId\": \"" + incident.id() + "\", \"surprise\": 1}";
+        model.enqueue(finalAnswer(unparseable), finalAnswer(unparseable));
 
         orchestrator.start(incident);
 
@@ -146,12 +148,14 @@ class InvestigationOrchestratorSmokeTest {
     @Test
     void draftCitingAnotherIncidentGivesInconclusiveFallbackNamingTheViolation() throws Exception {
         Incident incident = newIncident();
-        model.enqueue(finalAnswer(validDraft(incident.id()).replace("\"supportingEvidenceIds\": [\"" + alertId(incident.id()),
-                "\"supportingEvidenceIds\": [\"ev-inc-000000000000-1")));
+        String foreign = validDraft(incident.id()).replace("\"supportingEvidenceIds\": [\"" + alertId(incident.id()),
+                "\"supportingEvidenceIds\": [\"ev-inc-000000000000-1");
+        model.enqueue(finalAnswer(foreign), finalAnswer(foreign));
 
         orchestrator.start(incident);
 
         InvestigationReport report = awaitReport(incident.id());
+        assertThat(model.requests()).hasSize(2);
         assertThat(report.status()).isEqualTo(InvestigationStatus.INCONCLUSIVE);
         assertThat(report.openQuestions()).containsExactly(InvestigationOrchestrator.DRAFT_INVALID,
                 "$.hypotheses[0].supportingEvidenceIds[0]: is not an evidence ID of incident " + incident.id()
@@ -299,6 +303,11 @@ class InvestigationOrchestratorSmokeTest {
 
     /** An {@link InvestigatorAgent} without chat memory. */
     private abstract static class StubAgent implements InvestigatorAgent {
+
+        @Override
+        public String correct(String incidentId, String errors) {
+            return ScriptedChatModel.DEFAULT_FINAL_ANSWER;
+        }
 
         @Override
         public ChatMemory getChatMemory(Object memoryId) {

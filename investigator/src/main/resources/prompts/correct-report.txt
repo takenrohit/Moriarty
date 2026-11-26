@@ -1,0 +1,4 @@
+Your report draft failed validation with these errors:
+{{errors}}
+Correct every error and return the whole corrected report. Cite only evidence IDs returned by tools in this conversation or the ALERT evidence ID; never invent one. You may call tools again if you need more evidence.
+Return only the JSON document that validates against the report schema in the first user message, with no text before or after it.

@@ -39,4 +39,18 @@ public interface InvestigatorAgent extends ChatMemoryAccess {
             @V("windowEnd") String windowEnd,
             @V("alertEvidenceId") String alertEvidenceId,
             @V("reportSchema") String reportSchema);
+
+    /**
+     * Asks the model once to correct a draft that failed parsing or validation (Req 4.3). Uses the same
+     * chat memory as {@link #investigate}, so the model sees its previous draft and the tool results;
+     * the tools stay available. The system message is the same as {@link #investigate}'s, which the
+     * memory already holds, so it is not added again.
+     *
+     * @param incidentId Incident_ID, the chat memory ID of the investigation
+     * @param errors the validation errors, one per line
+     * @return the corrected Report_Draft as a JSON string, not yet validated
+     */
+    @SystemMessage(fromResource = "prompts/investigator-system.txt")
+    @UserMessage(fromResource = "prompts/correct-report.txt")
+    String correct(@MemoryId String incidentId, @V("errors") String errors);
 }

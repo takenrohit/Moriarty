@@ -41,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -61,10 +62,13 @@ import org.springframework.stereotype.Component;
  *   <li>valid draft, budget not exhausted: report from the draft, {@code COMPLETED};
  *   <li>valid draft, budget exhausted: report from the draft plus a budget open question,
  *       {@code INCONCLUSIVE};
- *   <li>draft fails parsing ({@link ReportDraftParser}), semantic validation
- *       ({@link ReportValidator#validateDraft}) or the final check of the assembled report
- *       ({@link ReportValidator#validateReport}): fallback report listing the errors,
- *       {@code INCONCLUSIVE};
+ *   <li>draft fails parsing ({@link ReportDraftParser}), semantic validation including citation
+ *       existence ({@link ReportValidator#validateDraft}) or the final check of the assembled report
+ *       ({@link ReportValidator#validateReport}): one correction call
+ *       ({@link InvestigatorAgent#correct}) with up to {@value #MAX_REPORTED_ERRORS} errors, in the same
+ *       chat memory and before the same deadline; its draft gets the same checks and, if it fails too,
+ *       the fallback report lists both rounds' distinct errors (at most {@value #MAX_REPORTED_ERRORS}),
+ *       {@code INCONCLUSIVE}. Each rejected draft is audited ({@link AuditService#recordDraftRejection});
  *   <li>timeout: fallback report, {@code INCONCLUSIVE}; the agent thread is interrupted;
  *   <li>tool-calling round-trip limit: fallback report, {@code INCONCLUSIVE};
  *   <li>any other exception: fallback report, {@code FAILED}.
@@ -88,6 +92,9 @@ public class InvestigationOrchestrator {
     static final String TIMED_OUT = "timed out after ";
     static final String INTERRUPTED = "investigation was interrupted";
     static final String INTERNAL_ERROR = "internal error: ";
+
+    /** Most validation errors sent in the correction prompt and listed in the fallback report. */
+    static final int MAX_REPORTED_ERRORS = 10;
 
     /** Marker in the message of the exception LangChain4j 1.24.0 throws when the round-trip limit is hit. */
     static final String ROUND_TRIP_MARKER = "maxToolCallingRoundTrips";
@@ -222,32 +229,74 @@ public class InvestigationOrchestrator {
         Incident incident = incidents.find(incidentId)
                 .orElseThrow(() -> new IllegalStateException("no incident " + incidentId));
         String incidentJson = promptInputs.incidentJson(incident);
-        Future<String> future = executor.submit(agentCall(ctx, incidentJson, concluded));
+        AgentResult result = await(ctx, agentCall(ctx, concluded,
+                () -> agent.investigate(incidentId, incidentJson, PromptInputs.isoInstant(ctx.windowStart()),
+                        PromptInputs.isoInstant(ctx.windowEnd()), ctx.alertEvidenceId(),
+                        promptInputs.reportSchema())));
+        if (!(result instanceof AgentResult.Answer answer)) {
+            stopAccepting(ctx, concluded);
+            return outcomeFor(ctx, result);
+        }
+        DraftCheck first = checkDraft(ctx, answer.raw(), 1);
+        if (first.valid()) {
+            stopAccepting(ctx, concluded);
+            return first.outcome();
+        }
 
-        AgentResult result;
+        // One correction round in the same chat memory, with the tools still accepted and the same
+        // deadline (Req 4.3, 4.5).
+        audit.recordDraftRejection(new AuditService.DraftRejection(incidentId, 1, first.errors(),
+                AuditService.DraftRejection.RETRY));
+        String errors = correctionErrors(first.errors());
+        log.info("retrying the report draft with its validation errors incident_id={} error_count={}",
+                incidentId, first.errors().size());
+        AgentResult retry = await(ctx, agentCall(ctx, concluded, () -> agent.correct(incidentId, errors)));
+        stopAccepting(ctx, concluded);
+        if (!(retry instanceof AgentResult.Answer corrected)) {
+            return outcomeFor(ctx, retry);
+        }
+        DraftCheck second = checkDraft(ctx, corrected.raw(), 2);
+        if (second.valid()) {
+            return second.outcome();
+        }
+        audit.recordDraftRejection(new AuditService.DraftRejection(incidentId, 2, second.errors(),
+                AuditService.DraftRejection.FALLBACK));
+        List<String> both = Stream.concat(first.errors().stream(), second.errors().stream())
+                .distinct().limit(MAX_REPORTED_ERRORS).toList();
+        return fallbackOutcome(incidentId, InvestigationStatus.INCONCLUSIVE, DRAFT_INVALID, both);
+    }
+
+    /** Runs {@code call} on an agent thread and waits for it until the investigation deadline. */
+    private AgentResult await(InvestigationContext ctx, Callable<String> call) {
+        if (remainingNanos(ctx) == 0) {
+            return new AgentResult.TimedOut();
+        }
+        Future<String> future = executor.submit(call);
         try {
-            result = new AgentResult.Answer(future.get(remainingNanos(ctx), TimeUnit.NANOSECONDS));
+            return new AgentResult.Answer(future.get(remainingNanos(ctx), TimeUnit.NANOSECONDS));
         } catch (TimeoutException e) {
             future.cancel(true);
-            result = new AgentResult.TimedOut();
+            return new AgentResult.TimedOut();
         } catch (ExecutionException e) {
-            result = new AgentResult.Failed(e.getCause() != null ? e.getCause() : e);
+            return new AgentResult.Failed(e.getCause() != null ? e.getCause() : e);
         } catch (InterruptedException e) {
             future.cancel(true);
             Thread.currentThread().interrupt();
-            result = new AgentResult.Interrupted();
+            return new AgentResult.Interrupted();
         }
-        stopAccepting(ctx, concluded);
-        return outcomeFor(ctx, result);
     }
 
-    private Callable<String> agentCall(InvestigationContext ctx, String incidentJson, AtomicBoolean concluded) {
+    /** The first {@value #MAX_REPORTED_ERRORS} errors, one per line, for the correction prompt. */
+    static String correctionErrors(List<String> errors) {
+        return errors.stream().limit(MAX_REPORTED_ERRORS).map(e -> "- " + e).collect(Collectors.joining("\n"));
+    }
+
+    private Callable<String> agentCall(InvestigationContext ctx, AtomicBoolean concluded, Callable<String> call) {
         String incidentId = ctx.incidentId();
         return () -> {
             putMdc(ctx);
             try {
-                return agent.investigate(incidentId, incidentJson, PromptInputs.isoInstant(ctx.windowStart()),
-                        PromptInputs.isoInstant(ctx.windowEnd()), ctx.alertEvidenceId(), promptInputs.reportSchema());
+                return call.call();
             } finally {
                 if (concluded.get()) {
                     // The orchestrator already ended the investigation: drop the result and the memory
@@ -279,7 +328,7 @@ public class InvestigationOrchestrator {
     private Outcome outcomeFor(InvestigationContext ctx, AgentResult result) {
         String incidentId = ctx.incidentId();
         return switch (result) {
-            case AgentResult.Answer answer -> fromDraft(ctx, answer.raw());
+            case AgentResult.Answer answer -> throw new IllegalStateException("an answer is checked as a draft");
             case AgentResult.TimedOut timedOut -> {
                 String reason = TIMED_OUT + humanDuration(properties.budget().timeout());
                 log.warn("investigation timed out incident_id={} reason=\"{}\"", incidentId, reason);
@@ -302,10 +351,10 @@ public class InvestigationOrchestrator {
     }
 
     /**
-     * Parses and validates the draft, assembles the report and checks it again (Req 14.4, 14.6, 14.8,
-     * 15). Any failure gives the fallback report with the errors as open questions, {@code INCONCLUSIVE}.
+     * Parses and validates the draft against the stored Evidence_IDs, assembles the report and checks it
+     * again (Req 4.1, 14.4, 14.6, 14.8, 15). Returns the outcome, or the errors if any step failed.
      */
-    private Outcome fromDraft(InvestigationContext ctx, String raw) {
+    private DraftCheck checkDraft(InvestigationContext ctx, String raw, int attempt) {
         String incidentId = ctx.incidentId();
         ParseResult parsed = parser.parse(raw);
         List<EvidenceRef> refs = evidenceService.refs(incidentId);
@@ -324,7 +373,7 @@ public class InvestigationOrchestrator {
                         clock.instant());
                 errors = validator.validateReport(report, known).violations();
                 if (errors.isEmpty()) {
-                    return new Outcome(status, report);
+                    return new DraftCheck(new Outcome(status, report), List.of());
                 }
                 stage = "report validation";
             } catch (IllegalArgumentException e) {
@@ -332,9 +381,9 @@ public class InvestigationOrchestrator {
                 stage = "assembly";
             }
         }
-        log.warn("report draft rejected incident_id={} stage=\"{}\" error_count={}", incidentId, stage,
-                errors.size());
-        return fallbackOutcome(incidentId, InvestigationStatus.INCONCLUSIVE, DRAFT_INVALID, errors);
+        log.warn("report draft rejected incident_id={} attempt={} stage=\"{}\" error_count={}", incidentId,
+                attempt, stage, errors.size());
+        return new DraftCheck(null, errors);
     }
 
     /** Open question added when the Tool_Call_Budget was reached (Req 14.4). */
@@ -476,6 +525,14 @@ public class InvestigationOrchestrator {
 
     /** Terminal status and the report to store with it. */
     private record Outcome(InvestigationStatus status, InvestigationReport report) {
+    }
+
+    /** A checked draft: the outcome if it is valid, otherwise the errors. */
+    private record DraftCheck(Outcome outcome, List<String> errors) {
+
+        boolean valid() {
+            return outcome != null;
+        }
     }
 
     /** What waiting for the agent produced. */

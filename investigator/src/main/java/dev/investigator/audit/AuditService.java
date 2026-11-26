@@ -31,6 +31,9 @@ public interface AuditService {
 
     void recordApproval(Approval approval);
 
+    /** A report draft that failed parsing or validation, and what the Investigator does next (Req 4.5). */
+    void recordDraftRejection(DraftRejection rejection);
+
     /**
      * One tool invocation (Req 12.5).
      *
@@ -50,6 +53,19 @@ public interface AuditService {
      */
     record LlmExchange(String incidentId, String model, String requestJson, String responseJson, Integer inputTokens,
             Integer outputTokens, long latencyMs) {
+    }
+
+    /**
+     * One rejected report draft (Req 4.5).
+     *
+     * @param attempt 1 for the first draft, 2 for the corrected one
+     * @param errors  the parsing or validation errors, as reported in the fallback report
+     * @param next    {@link #RETRY} or {@link #FALLBACK}
+     */
+    record DraftRejection(String incidentId, int attempt, List<String> errors, String next) {
+
+        public static final String RETRY = "retry";
+        public static final String FALLBACK = "fallback";
     }
 
     /** One approval decision (Req 12.5); Phase 2 has no approval flow yet, so nothing calls it. */

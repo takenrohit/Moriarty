@@ -27,6 +27,9 @@ public class JdbcAuditService implements AuditService {
     /** JSON longer than this many characters is stored as a truncated prefix. */
     static final int MAX_JSON_CHARS = 64 * 1024;
 
+    /** {@code tool_calls.tool_name} of a rejected report draft; not a real tool. */
+    static final String DRAFT_REJECTION_TOOL = "report_validation";
+
     private static final Logger log = LoggerFactory.getLogger(JdbcAuditService.class);
 
     private final JdbcClient jdbc;
@@ -114,6 +117,28 @@ public class JdbcAuditService implements AuditService {
                 .param("requestedAt", PgValues.timestamp(approval.requestedAt()))
                 .param("decidedBy", PgValues.text(approval.decidedBy()))
                 .param("decidedAt", PgValues.timestamp(approval.decidedAt()))
+                .update());
+    }
+
+    /**
+     * Stored as a {@code tool_calls} row with tool name {@value #DRAFT_REJECTION_TOOL} and status
+     * {@code rejected}, so no new table or grant is needed; {@code args} holds the attempt, the errors and
+     * the next step (CP-77).
+     */
+    @Override
+    public void recordDraftRejection(DraftRejection rejection) {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("attempt", rejection.attempt());
+        args.put("next", rejection.next());
+        args.put("errors", rejection.errors());
+        insert("tool_calls", () -> jdbc.sql("""
+                INSERT INTO tool_calls (incident_id, tool_name, args, status, duration_ms, evidence_id, error)
+                VALUES (:incidentId, :toolName, CAST(:args AS jsonb), 'rejected', 0, NULL, :error)
+                """)
+                .param("incidentId", PgValues.text(rejection.incidentId()))
+                .param("toolName", DRAFT_REJECTION_TOOL)
+                .param("args", jsonb(args))
+                .param("error", "report draft failed validation; next: " + rejection.next())
                 .update());
     }
 
