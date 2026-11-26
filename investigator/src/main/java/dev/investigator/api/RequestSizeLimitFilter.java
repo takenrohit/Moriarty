@@ -18,9 +18,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 /**
- * Rejects alert bodies larger than 64 KB with 413 before they are parsed (Req 4.9).
+ * Rejects alert bodies larger than 64 KB with 413 before they are parsed (Req 4.9). Applies to
+ * {@code /api/v1/alerts} and the webhook endpoints under {@code /api/v1/alerts/}.
  *
  * <p>A declared {@code Content-Length} over the limit is rejected without reading the body. Otherwise
  * (no length, for example chunked transfer) the body is read up to the limit plus one byte; a body
@@ -43,8 +45,9 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        String path = request.getRequestURI().substring(request.getContextPath().length());
-        return !ALERTS_PATH.equals(path);
+        // Decoded and normalized as Spring MVC matches it, so an encoded path cannot skip the limit.
+        String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
+        return !(ALERTS_PATH.equals(path) || path.startsWith(ALERTS_PATH + "/"));
     }
 
     @Override
