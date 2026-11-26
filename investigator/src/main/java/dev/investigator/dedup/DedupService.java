@@ -8,6 +8,7 @@ import dev.investigator.investigation.InvestigationOrchestrator;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
 import java.util.Objects;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -52,9 +53,19 @@ public class DedupService {
      * @param payload   the alert as received, recorded in the audit trail
      */
     public Admission admit(Incident candidate, String source, Object payload) {
+        return admit(candidate, source, payload, incident -> { });
+    }
+
+    /**
+     * Admits one normalized alert, running {@code beforeStart} only when it would start a new investigation,
+     * before anything is stored. {@code beforeStart} may throw to refuse the start (the investigation rate
+     * limit, Req 6.2); an alert attached to an open Incident never runs it.
+     */
+    public Admission admit(Incident candidate, String source, Object payload, Consumer<Incident> beforeStart) {
         Objects.requireNonNull(candidate, "candidate");
+        Objects.requireNonNull(beforeStart, "beforeStart");
         if (candidate.fingerprint() == null) {
-            return start(candidate, source, payload);
+            return start(candidate, source, payload, beforeStart);
         }
         return lock.withLock(candidate.fingerprint(), () -> {
             // The Investigation ends just before its Incident becomes REPORTED (or the Incident stays open if
@@ -69,7 +80,7 @@ public class DedupService {
                     return new Admission(existing.id(), status, true);
                 }
             }
-            return start(candidate, source, payload);
+            return start(candidate, source, payload, beforeStart);
         });
     }
 
@@ -77,7 +88,8 @@ public class DedupService {
         return status == InvestigationStatus.PENDING || status == InvestigationStatus.RUNNING;
     }
 
-    private Admission start(Incident candidate, String source, Object payload) {
+    private Admission start(Incident candidate, String source, Object payload, Consumer<Incident> beforeStart) {
+        beforeStart.accept(candidate);
         incidents.save(candidate);
         audit.recordAlert(source, payload, candidate);
         Investigation investigation = orchestrator.start(candidate);

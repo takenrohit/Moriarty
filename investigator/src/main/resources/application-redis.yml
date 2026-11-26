@@ -14,3 +14,5 @@ investigator:
   dedup:
     lock-ttl: ${DEDUP_LOCK_TTL:30s}     # how long a crashed holder can block the same fingerprint
     lock-wait: ${DEDUP_LOCK_WAIT:10s}   # how long a duplicate waits before it is rejected with 503
+  # Rate-limit buckets live in Redis (investigator:rl:<scope>:<key>) and are shared by all instances;
+  # sizes come from investigator.rate-limit in application.yml (Req 6.3, 6.4).

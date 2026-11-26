@@ -29,6 +29,7 @@ import dev.investigator.investigation.InvestigationObservability;
 import dev.investigator.investigation.InvestigationScope;
 import dev.investigator.logging.LogFields;
 import dev.investigator.observability.InvestigatorMetrics;
+import dev.investigator.ratelimit.RateLimiter;
 import dev.investigator.runbook.RunbookCatalog;
 import dev.investigator.runbook.RunbookMatch;
 import dev.langchain4j.agent.tool.P;
@@ -59,7 +60,8 @@ import org.springframework.stereotype.Component;
  * clamp, text and look-back limits, Req 11.1 to 11.9), calls one Integration_Client inside
  * {@link InvestigationScope#with}, stores the result through {@link EvidenceService} and returns the
  * capped JSON summary, which carries the Evidence_ID, the applied range and the {@code clamped} flag
- * (Req 9.1, 9.4, 11.3, 11.8). A refusal gives {@code {"error", "hint"}} and calls no client
+ * (Req 9.1, 9.4, 11.3, 11.8). After validation, the {@link RateLimiter} bucket of the integration must
+ * have a token (Req 6.1). A refusal gives {@code {"error", "hint"}} and calls no client
  * (Req 10.9); a client exception gives an error result, is logged, and stores no Evidence
  * (Req 10.10).
  */
@@ -68,6 +70,8 @@ public class ObservabilityTools {
 
     static final String INTEGRATION_FAILED = "integration call failed";
     static final String INTEGRATION_HINT = "try a different query or tool";
+    static final String RATE_LIMITED = "rate limit exceeded for ";
+    static final String RATE_LIMIT_HINT = "wait and retry later or use other evidence";
 
     /** {@code redaction_status} logged when the call stored no Evidence (rejected, error, no runbook). */
     static final String REDACTION_NONE = "none";
@@ -90,12 +94,14 @@ public class ObservabilityTools {
     private final AuditService audit;
     private final InvestigationObservability observability;
     private final InvestigatorMetrics meters;
+    private final RateLimiter rateLimiter;
 
     public ObservabilityTools(ToolGuard guard, EvidenceService evidence,
             MetricsClient metrics, LogClient logs, TraceClient traces, ChangeClient changes,
             RunbookCatalog runbooks, MetricSummarizer metricSummarizer, LogSummarizer logSummarizer,
             TraceSummarizer traceSummarizer, ObjectMapper mapper, InvestigatorProperties properties,
-            Clock clock, AuditService audit, InvestigationObservability observability, InvestigatorMetrics meters) {
+            Clock clock, AuditService audit, InvestigationObservability observability, InvestigatorMetrics meters,
+            RateLimiter rateLimiter) {
         this.guard = guard;
         this.evidence = evidence;
         this.metrics = metrics;
@@ -112,6 +118,7 @@ public class ObservabilityTools {
         this.audit = audit;
         this.observability = observability;
         this.meters = meters;
+        this.rateLimiter = rateLimiter;
     }
 
     @Tool("Query a metric time series for one service. start/end are ISO-8601 instants, e.g. 2026-11-23T14:00:00Z."
@@ -125,6 +132,7 @@ public class ObservabilityTools {
             String query = guard.requireQuery(promql);
             TimeRange range = guard.clampToWindow(ctx, start, end);
             Duration step = metricStep(range.span(), limits.minMetricStep(), limits.maxMetricPoints());
+            requireRate("metrics");
             MetricSeries series = InvestigationScope.with(ctx,
                     () -> metrics.queryRange(svc, query, range.start(), range.end(), step));
             MetricSummary probe = metricSummarizer.summarize(null, svc, query, range.start(), range.end(),
@@ -146,6 +154,7 @@ public class ObservabilityTools {
             String svc = guard.requireAllowedService(service);
             String logql = guard.requireQuery(query);
             TimeRange range = guard.clampToWindow(ctx, start, end);
+            requireRate("logs");
             LogSearchResult result = InvestigationScope.with(ctx,
                     () -> logs.search(svc, logql, range.start(), range.end(), limits.logFetchLimit()));
             Instant observedAt = result.entries().stream().map(LogEntry::at).filter(Objects::nonNull)
@@ -164,6 +173,7 @@ public class ObservabilityTools {
         return invoke("findProblemTraces", incidentId, args("service", service, "start", start, "end", end), ctx -> {
             String svc = guard.requireAllowedService(service);
             TimeRange range = guard.clampToWindow(ctx, start, end);
+            requireRate("traces");
             TraceSearchResult result = InvestigationScope.with(ctx, () -> traces.findProblemTraces(svc,
                     range.start(), range.end(), limits.slowTraceThreshold(), limits.traceLimit()));
             Instant observedAt = result.traces().stream().map(TraceRecord::start).filter(Objects::nonNull)
@@ -182,6 +192,7 @@ public class ObservabilityTools {
         return invoke("getRecentChanges", incidentId, args("service", service, "lookbackHours", lookbackHours), ctx -> {
             String svc = guard.requireAllowedService(service);
             Lookback lookback = guard.lookback(ctx, lookbackHours);
+            requireRate("changes");
             List<ChangeRecord> records = InvestigationScope.with(ctx,
                     () -> changes.recentChanges(svc, lookback.since(), lookback.until()));
             List<StoredEvidence> storedEvidence = new ArrayList<>();
@@ -210,6 +221,7 @@ public class ObservabilityTools {
         return invoke("findRunbook", incidentId, args("service", service, "symptom", symptom), ctx -> {
             String svc = guard.requireAllowedService(service);
             String text = guard.requireSymptom(symptom);
+            requireRate("runbooks");
             Optional<RunbookMatch> match = runbooks.bestMatch(svc, text);
             if (match.isEmpty()) {
                 return Outcome.noEvidence(ToolResults.NOT_FOUND);
@@ -220,6 +232,18 @@ public class ObservabilityTools {
                     id -> RunbookSummary.of(id, runbook.title(), runbook.service(), runbook.steps()));
             return Outcome.stored(ev.evidence().summary(), List.of(ev));
         });
+    }
+
+    /**
+     * Takes a token from the bucket of {@code integration} after the arguments passed the guard (Req 6.1).
+     * An empty bucket is a rejection like any other: the call already counted against the
+     * Tool_Call_Budget in {@link ToolGuard#begin}, and no client is called.
+     */
+    private void requireRate(String integration) {
+        if (!rateLimiter.tryToolCall(integration)) {
+            log.warn("tool call rate limited integration={}", integration);
+            throw new ToolRejectedException(RATE_LIMITED + integration, RATE_LIMIT_HINT);
+        }
     }
 
     /**

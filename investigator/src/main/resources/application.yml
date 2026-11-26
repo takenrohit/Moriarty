@@ -69,6 +69,14 @@ investigator:
     max-changed-files: 20
   agent:
     memory-max-messages: 64
+  rate-limit:                 # token buckets: burst up to the limit, refilled continuously (Req 6.6)
+    tool-calls-per-minute:    # per integration; a missing entry gets 120
+      metrics: 120
+      logs: 120
+      traces: 120
+      changes: 120
+      runbooks: 120
+    investigations-per-service-per-hour: 20   # past this, new alerts for the service get HTTP 429
   services:
     checkout-api:
       dependencies: [payment-gateway]

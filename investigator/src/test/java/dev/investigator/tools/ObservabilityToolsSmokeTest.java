@@ -18,6 +18,10 @@ import dev.investigator.evidence.MetricSummarizer;
 import dev.investigator.evidence.TraceSummarizer;
 import dev.investigator.integration.changes.ChangeClient;
 import dev.investigator.integration.logs.LogClient;
+import dev.investigator.integration.logs.LogSearchResult;
+import dev.investigator.ratelimit.LocalRateLimiter;
+import dev.investigator.ratelimit.RateLimitProperties;
+import dev.investigator.ratelimit.RateLimiter;
 import dev.investigator.integration.metrics.MetricsClient;
 import dev.investigator.integration.metrics.PrometheusMetricsClient;
 import dev.investigator.integration.traces.TraceClient;
@@ -31,7 +35,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -91,6 +97,9 @@ class ObservabilityToolsSmokeTest {
 
     @Autowired
     Clock clock;
+
+    @Autowired
+    RateLimiter rateLimiter;
 
     String incidentId;
 
@@ -221,13 +230,36 @@ class ObservabilityToolsSmokeTest {
         ObservabilityTools withFailingLogs = new ObservabilityTools(guard, evidenceService, metrics, failing,
                 traces, changes, runbooks, metricSummarizer, logSummarizer, traceSummarizer, mapper, properties,
                 clock, new NoOpAuditService(), new InvestigationObservability(ObservationRegistry.NOOP),
-                new InvestigatorMetrics(new SimpleMeterRegistry()));
+                new InvestigatorMetrics(new SimpleMeterRegistry()), rateLimiter);
 
         JsonNode json = mapper.readTree(withFailingLogs.searchLogs(incidentId, "checkout-api", "x", START, END));
 
         assertThat(json.get("error").asText()).isEqualTo(ObservabilityTools.INTEGRATION_FAILED);
         assertThat(json.get("hint").asText()).isEqualTo(ObservabilityTools.INTEGRATION_HINT);
         assertThat(repository.findByIncident(incidentId)).isEmpty();
+    }
+
+    @Test
+    void emptyIntegrationBucketRejectsTheCallWithoutCallingTheClientAndCountsIt() throws Exception {
+        RateLimiter oneLogCall = new LocalRateLimiter(new RateLimitProperties(Map.of("logs", 1), 20));
+        AtomicInteger clientCalls = new AtomicInteger();
+        LogClient counting = (service, logql, start, end, limit) -> {
+            clientCalls.incrementAndGet();
+            return new LogSearchResult(List.of(), false);
+        };
+        ObservabilityTools limited = new ObservabilityTools(guard, evidenceService, metrics, counting,
+                traces, changes, runbooks, metricSummarizer, logSummarizer, traceSummarizer, mapper, properties,
+                clock, new NoOpAuditService(), new InvestigationObservability(ObservationRegistry.NOOP),
+                new InvestigatorMetrics(new SimpleMeterRegistry()), oneLogCall);
+
+        limited.searchLogs(incidentId, "checkout-api", "{service=\"checkout-api\"}", START, END);
+        JsonNode json = mapper.readTree(limited.searchLogs(incidentId, "checkout-api",
+                "{service=\"checkout-api\"}", START, END));
+
+        assertThat(json.get("error").asText()).isEqualTo("rate limit exceeded for logs");
+        assertThat(json.get("hint").asText()).isEqualTo(ObservabilityTools.RATE_LIMIT_HINT);
+        assertThat(clientCalls).hasValue(1);
+        assertThat(registry.find(incidentId).orElseThrow().used()).hasValue(2);
     }
 
     @Test
@@ -242,7 +274,7 @@ class ObservabilityToolsSmokeTest {
                 (service, logql, start, end, limit) -> { throw new AssertionError("not called"); },
                 traces, changes, runbooks, metricSummarizer, logSummarizer, traceSummarizer, mapper, properties,
                 clock, new NoOpAuditService(), new InvestigationObservability(ObservationRegistry.NOOP),
-                new InvestigatorMetrics(new SimpleMeterRegistry()));
+                new InvestigatorMetrics(new SimpleMeterRegistry()), rateLimiter);
 
         JsonNode json = mapper.readTree(withPrometheus.getMetric(incidentId, "checkout-api",
                 "http_server_requests_seconds_count{service=\"checkout-api\"}", START, END));
