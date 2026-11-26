@@ -19,3 +19,10 @@ investigator:
       read-timeout: ${LOKI_READ_TIMEOUT:10s}
       # Loki stream label holding the service name; OTLP-ingested logs use service_name.
       service-label: ${LOKI_SERVICE_LABEL:service_name}
+    traces:
+      base-url: ${TEMPO_URL:}
+      bearer-token: ${TEMPO_BEARER_TOKEN:}
+      username: ${TEMPO_USERNAME:}
+      password: ${TEMPO_PASSWORD:}
+      connect-timeout: ${TEMPO_CONNECT_TIMEOUT:2s}
+      read-timeout: ${TEMPO_READ_TIMEOUT:10s}
