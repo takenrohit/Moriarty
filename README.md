@@ -60,14 +60,14 @@ evidence that does not exist or belongs to another incident.
 
 ## Tech stack
 
-Java 21, Spring Boot 3.5, LangChain4j 1.x (OpenAI-compatible chat API), Micrometer and
+Java 21, Spring Boot 3.5, LangChain4j 1.x (OpenAI-compatible chat API or Amazon Bedrock), Micrometer and
 OpenTelemetry, PostgreSQL with Flyway, Redis, Thymeleaf, JUnit 5, Testcontainers, WireMock, and a
 Docker Compose stack with Prometheus, Alertmanager, Grafana, Loki, Tempo and the OpenTelemetry
 Collector.
 
 ## Quick start A: mock mode (no Docker)
 
-Requires JDK 21 and an API key for any OpenAI-compatible chat endpoint. The `mock` profile serves
+Requires JDK 21 and an API key for any OpenAI-compatible chat endpoint or Amazon Bedrock. The `mock` profile serves
 built-in scenario data and keeps everything in memory.
 
 ```bash
@@ -84,6 +84,20 @@ LLM_API_KEY=<your key>
 LLM_MODEL=gemini-2.5-flash
 LLM_MAX_RETRIES=10          # helps on rate-limited free tiers
 ```
+
+For Amazon Bedrock (Claude or Nova models through the Converse API) use a Bedrock API key and a
+model ID or inference profile ID that your account can invoke, for example
+`us.amazon.nova-pro-v1:0` or a `us.anthropic.claude-*` profile. `LLM_API_KEY` is then not needed:
+
+```properties
+LLM_PROVIDER=bedrock
+LLM_MODEL=us.amazon.nova-pro-v1:0
+AWS_REGION=us-east-1
+AWS_BEARER_TOKEN_BEDROCK=<your Bedrock API key>
+```
+
+Without `AWS_BEARER_TOKEN_BEDROCK` the default AWS credential chain is used
+(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` or `AWS_PROFILE`).
 
 Spring Boot does not read `.env` by itself, so load it into the shell and start the service:
 
@@ -174,11 +188,15 @@ documents each one. The main ones:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible chat completions endpoint |
-| `LLM_API_KEY` | (required) | API key for the LLM endpoint |
-| `LLM_MODEL` | `gpt-4o-mini` | Model name |
-| `LLM_JSON_MODE` | `true` | Request JSON object responses |
+| `LLM_PROVIDER` | `openai` | `openai` (OpenAI-compatible endpoint) or `bedrock` (Amazon Bedrock) |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible chat completions endpoint (`openai` only) |
+| `LLM_API_KEY` | (required for `openai`) | API key for the LLM endpoint |
+| `LLM_MODEL` | `gpt-4o-mini` | Model name, or the Bedrock model ID or inference profile ID |
+| `LLM_JSON_MODE` | `true` | Request JSON object responses (`openai` only) |
 | `LLM_MAX_RETRIES` | `2` | Retries on 429/5xx from the LLM |
+| `LLM_MAX_OUTPUT_TOKENS` | `4096` | Maximum output tokens per request (`bedrock` only) |
+| `AWS_REGION` | `us-east-1` | Bedrock region (`bedrock` only) |
+| `AWS_BEARER_TOKEN_BEDROCK` | (unset) | Bedrock API key; unset uses the default AWS credential chain |
 | `SPRING_PROFILES_ACTIVE` | `mock` | `mock`, or `real` plus optional `postgres`, `redis` |
 | `PROMETHEUS_URL`, `LOKI_URL`, `TEMPO_URL` | `localhost` ports | Backends for the `real` profile; blank falls back to mock |
 | `GITHUB_API_URL`, `GITHUB_REPOSITORY`, `GITHUB_TOKEN` | fake GitHub | Deployment history |
@@ -217,7 +235,7 @@ Limits such as the tool-call budget, the token budget and rate limits are in
 ```bash
 cd investigator
 ./mvnw verify                 # unit, property and integration tests
-./mvnw verify -Pllm-eval      # real-LLM evaluation; needs LLM_API_KEY (skipped without it)
+./mvnw verify -Pllm-eval      # real-LLM evaluation; needs LLM_API_KEY or AWS_BEARER_TOKEN_BEDROCK (skipped without)
 ```
 
 Integration tests tagged `containers` use Testcontainers (PostgreSQL, Redis, Prometheus) and need

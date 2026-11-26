@@ -14,6 +14,7 @@ import dev.investigator.store.EvidenceRepository;
 import dev.investigator.testsupport.ScenarioEvaluator;
 import dev.investigator.testsupport.ScenarioEvaluator.FailedCheck;
 import dev.investigator.testsupport.ScriptedChatModel;
+import dev.langchain4j.model.bedrock.BedrockChatModel;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import java.nio.charset.StandardCharsets;
@@ -22,7 +23,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.slf4j.Logger;
@@ -36,16 +37,18 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 /**
- * Scenario_Library evaluation against the configured OpenAI-compatible LLM (reliability Req 10.4): one
- * run per non-default scenario, whose report must pass {@link ScenarioEvaluator} for that scenario's
- * expected cause within 3 minutes. The default scenario is covered by {@link RealLlmDemoEvaluationIT}.
+ * Scenario_Library evaluation against the configured LLM, OpenAI-compatible or Bedrock (reliability
+ * Req 10.4, 11.13): one run per non-default scenario, whose report must pass {@link ScenarioEvaluator}
+ * for that scenario's expected cause within 3 minutes. The default scenario is covered by
+ * {@link RealLlmDemoEvaluationIT}.
  *
- * <p>Tagged {@code llm} (runs only with {@code -Pllm-eval}) and disabled unless {@code LLM_API_KEY} is
- * set, like {@link RealLlmDemoEvaluationIT}; a run that failed on a provider 429 or 5xx is repeated.
+ * <p>Tagged {@code llm} (runs only with {@code -Pllm-eval}) and disabled unless {@code LLM_API_KEY} or
+ * {@code AWS_BEARER_TOKEN_BEDROCK} is set ({@link RealLlmKeys}), like {@link RealLlmDemoEvaluationIT};
+ * a run that failed on a provider 429 or 5xx is repeated.
  */
 @Tag("llm")
-@EnabledIfEnvironmentVariable(named = "LLM_API_KEY", matches = ".*\\S.*",
-        disabledReason = "LLM_API_KEY is not set")
+@EnabledIf(value = "dev.investigator.evaluation.RealLlmKeys#present",
+        disabledReason = "neither LLM_API_KEY nor AWS_BEARER_TOKEN_BEDROCK is set")
 @SpringBootTest(properties = "investigator.llm.enabled=true")
 @AutoConfigureMockMvc
 class RealLlmScenarioEvaluationIT {
@@ -69,7 +72,7 @@ class RealLlmScenarioEvaluationIT {
     @EnumSource(value = ScenarioKind.class, names = {"BAD_DEPLOY", "DB_POOL_EXHAUSTION", "NOISY_NEIGHBOUR"})
     void scenarioPassesTheEvaluatorWithTheRealLlm(ScenarioKind kind) throws Exception {
         assertThat(context.getBeanNamesForType(ScriptedChatModel.class)).as("scripted Chat_Model beans").isEmpty();
-        assertThat(chatModel).isInstanceOf(OpenAiChatModel.class);
+        assertThat(chatModel).isInstanceOfAny(OpenAiChatModel.class, BedrockChatModel.class);
 
         Run result = investigate(kind, 1);
         for (int attempt = 2; attempt <= MAX_ATTEMPTS && result.providerTransientFailure(); attempt++) {

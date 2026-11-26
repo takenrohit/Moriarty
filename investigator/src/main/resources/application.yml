@@ -94,10 +94,15 @@ investigator:
     # unknown), bad-deploy, db-pool-exhaustion, noisy-neighbour (case-insensitive, - or _; CP-75).
   llm:
     enabled: true
+    provider: ${LLM_PROVIDER:openai}    # openai (OpenAI-compatible endpoint) or bedrock (Amazon Bedrock)
     base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
-    api-key: ${LLM_API_KEY:}
-    model: ${LLM_MODEL:gpt-4o-mini}
-    json-mode: ${LLM_JSON_MODE:true}
+    api-key: ${LLM_API_KEY:}            # required for openai only
+    model: ${LLM_MODEL:gpt-4o-mini}     # for bedrock: model ID or inference profile ID
+    json-mode: ${LLM_JSON_MODE:true}    # openai only
     temperature: 0.0
     request-timeout: 60s
     max-retries: ${LLM_MAX_RETRIES:2}   # raise (e.g. 10) for rate-limited free tiers
+    max-output-tokens: ${LLM_MAX_OUTPUT_TOKENS:4096}   # bedrock only
+    bedrock:
+      region: ${AWS_REGION:us-east-1}
+      api-key: ${AWS_BEARER_TOKEN_BEDROCK:}   # Bedrock API key (bearer); blank uses the default AWS credential chain

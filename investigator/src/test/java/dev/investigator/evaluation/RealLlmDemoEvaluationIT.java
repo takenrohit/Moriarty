@@ -14,6 +14,7 @@ import dev.investigator.testsupport.DemoScenarioScript;
 import dev.investigator.testsupport.ScenarioEvaluator;
 import dev.investigator.testsupport.ScenarioEvaluator.FailedCheck;
 import dev.investigator.testsupport.ScriptedChatModel;
+import dev.langchain4j.model.bedrock.BedrockChatModel;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import java.nio.charset.StandardCharsets;
@@ -24,7 +25,7 @@ import java.util.List;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,20 +37,22 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 /**
- * Demo scenario evaluation against the configured OpenAI-compatible LLM (Req 14.13, 20.7): 5 runs,
- * each must produce a report within 3 minutes that passes every {@link ScenarioEvaluator} check.
+ * Demo scenario evaluation against the configured LLM, OpenAI-compatible or Bedrock (Req 11.13, 14.13,
+ * 20.7): 5 runs, each must produce a report within 3 minutes that passes every {@link ScenarioEvaluator}
+ * check.
  *
  * <p>Tagged {@code llm}, so it runs only with {@code -Pllm-eval} (Req 20.8). The class is disabled
- * unless {@code LLM_API_KEY} is set; the condition is evaluated before the Spring context starts,
- * because {@code LlmConfig} fails startup without a key. The context uses the production Chat_Model,
+ * unless {@code LLM_API_KEY} or {@code AWS_BEARER_TOKEN_BEDROCK} is set ({@link RealLlmKeys}); the
+ * condition is evaluated before the Spring context starts, because {@code LlmConfig} fails startup
+ * without a key. With a Bedrock key also set {@code LLM_PROVIDER=bedrock}. The context uses the production Chat_Model,
  * not {@code TestLlmConfig}'s scripted one.
  *
  * <p>A run whose investigation failed on a provider 429 or 5xx is repeated (up to {@value #MAX_ATTEMPTS}
  * attempts) instead of being scored, because that failure says nothing about the model's analysis.
  */
 @Tag("llm")
-@EnabledIfEnvironmentVariable(named = "LLM_API_KEY", matches = ".*\\S.*",
-        disabledReason = "LLM_API_KEY is not set")
+@EnabledIf(value = "dev.investigator.evaluation.RealLlmKeys#present",
+        disabledReason = "neither LLM_API_KEY nor AWS_BEARER_TOKEN_BEDROCK is set")
 @SpringBootTest(properties = "investigator.llm.enabled=true")
 @AutoConfigureMockMvc
 class RealLlmDemoEvaluationIT {
@@ -75,7 +78,7 @@ class RealLlmDemoEvaluationIT {
     @RepeatedTest(5)
     void demoScenarioPassesEveryEvaluatorCheckWithTheRealLlm(RepetitionInfo repetition) throws Exception {
         assertThat(context.getBeanNamesForType(ScriptedChatModel.class)).as("scripted Chat_Model beans").isEmpty();
-        assertThat(chatModel).isInstanceOf(OpenAiChatModel.class);
+        assertThat(chatModel).isInstanceOfAny(OpenAiChatModel.class, BedrockChatModel.class);
 
         int run = repetition.getCurrentRepetition();
         Run result = investigate(run, 1);
