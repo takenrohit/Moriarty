@@ -3,6 +3,7 @@ package dev.investigator.evidence;
 import dev.investigator.config.InvestigatorProperties;
 import dev.investigator.integration.logs.LogEntry;
 import dev.investigator.integration.logs.LogSearchResult;
+import dev.investigator.integration.logs.LogTemplater;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -12,8 +13,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * Builds the {@link LogSummary} of a log search (Req 9.5, 10.4): messages grouped by trimmed text,
- * sorted by count descending then message ascending, top N (default 5) kept, each shown with at most
+ * Builds the {@link LogSummary} of a log search (Req 9.5, 10.4): trimmed messages grouped by their
+ * {@link LogTemplater} template (Req 4.4), each group shown as its first message in entry order, sorted by
+ * count descending then message ascending, top N (default 5) kept, each shown with at most
  * {@value #MAX_MESSAGE_LENGTH} code points.
  */
 @Component
@@ -38,18 +40,24 @@ public class LogSummarizer {
     public LogSummary summarize(String evidenceId, String service, String query, Instant appliedStart,
             Instant appliedEnd, boolean clamped, LogSearchResult result) {
         List<LogEntry> entries = result.entries();
-        Map<String, Integer> counts = new HashMap<>();
+        // Template -> first message of that template (in entry order) and its count.
+        Map<String, String> representatives = new HashMap<>();
+        Map<String, Integer> templateCounts = new HashMap<>();
         Instant firstSeen = null;
         Instant lastSeen = null;
         for (LogEntry entry : entries) {
             String message = entry.message() == null ? "" : entry.message().trim();
-            counts.merge(message, 1, Integer::sum);
+            String template = LogTemplater.template(message);
+            representatives.putIfAbsent(template, message);
+            templateCounts.merge(template, 1, Integer::sum);
             Instant at = entry.at();
             if (at != null) {
                 firstSeen = firstSeen == null || at.isBefore(firstSeen) ? at : firstSeen;
                 lastSeen = lastSeen == null || at.isAfter(lastSeen) ? at : lastSeen;
             }
         }
+        Map<String, Integer> counts = new HashMap<>();
+        templateCounts.forEach((template, count) -> counts.put(representatives.get(template), count));
         List<LogSummary.MessageCount> top = counts.entrySet().stream()
                 .sorted(Map.Entry.<String, Integer>comparingByValue(Comparator.reverseOrder())
                         .thenComparing(Map.Entry.comparingByKey()))

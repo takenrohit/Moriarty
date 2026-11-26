@@ -10,3 +10,12 @@ investigator:
       password: ${PROMETHEUS_PASSWORD:}
       connect-timeout: ${PROMETHEUS_CONNECT_TIMEOUT:2s}
       read-timeout: ${PROMETHEUS_READ_TIMEOUT:10s}
+    logs:
+      base-url: ${LOKI_URL:}
+      bearer-token: ${LOKI_BEARER_TOKEN:}
+      username: ${LOKI_USERNAME:}
+      password: ${LOKI_PASSWORD:}
+      connect-timeout: ${LOKI_CONNECT_TIMEOUT:2s}
+      read-timeout: ${LOKI_READ_TIMEOUT:10s}
+      # Loki stream label holding the service name; OTLP-ingested logs use service_name.
+      service-label: ${LOKI_SERVICE_LABEL:service_name}
