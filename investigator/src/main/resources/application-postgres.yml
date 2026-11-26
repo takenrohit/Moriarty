@@ -1,0 +1,26 @@
+# "postgres" profile: PostgreSQL repositories, Flyway migrations and the audit trail (Req 12, CP-48, CP-57).
+#
+# Two database roles:
+# - Flyway connects as the schema owner (SPRING_FLYWAY_USER / SPRING_FLYWAY_PASSWORD) and runs the
+#   migrations before the application serves requests (Req 12.4).
+# - The application connects as a separate non-owner role (SPRING_DATASOURCE_USERNAME /
+#   SPRING_DATASOURCE_PASSWORD). V2__audit.sql creates that role if it does not exist, using these same
+#   values, and grants it no UPDATE or DELETE on the audit tables (Req 12.6). The owner must be allowed to
+#   create roles (the Compose superuser is); otherwise create the role beforehand.
+#
+# The defaults are local-only development values matching deploy/docker-compose.yml, not secrets.
+# Override every one of them outside a local run.
+spring:
+  autoconfigure:
+    exclude: ""               # re-enables DataSourceAutoConfiguration, excluded in application.yml
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/investigator}
+    username: ${SPRING_DATASOURCE_USERNAME:investigator_app}
+    password: ${SPRING_DATASOURCE_PASSWORD:investigator-app-local}
+  flyway:
+    enabled: true
+    user: ${SPRING_FLYWAY_USER:investigator}
+    password: ${SPRING_FLYWAY_PASSWORD:investigator-local}
+    placeholders:
+      app_role: ${spring.datasource.username}
+      app_password: ${spring.datasource.password}

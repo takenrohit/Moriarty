@@ -7,7 +7,11 @@ spring:
     virtual:
       enabled: true
   flyway:
-    enabled: false            # Flyway on classpath, inactive in Phase 1
+    enabled: false            # enabled by the "postgres" profile (application-postgres.yml)
+  autoconfigure:
+    # No database outside the "postgres" profile: the in-memory repositories are used (Req 12.3, CP-48).
+    # application-postgres.yml clears this list.
+    exclude: org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
 
 logging:
   structured:
