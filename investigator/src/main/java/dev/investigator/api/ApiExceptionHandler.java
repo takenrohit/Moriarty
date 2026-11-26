@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *   <li>Unreadable body (malformed JSON, missing body, wrong JSON type): 400 with a generic message.
  *       The request body and the parser message are never echoed or logged.
  *   <li>{@link IncidentNotFoundException}: 404 (Req 6.8).
+ *   <li>{@link ReportNotFoundException}: 404 (Req 8.2).
  * </ul>
  */
 @RestControllerAdvice
@@ -67,6 +68,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(IncidentNotFoundException.class)
     ResponseEntity<ApiErrorResponse> incidentNotFound(IncidentNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("incident not found"));
+    }
+
+    @ExceptionHandler(ReportNotFoundException.class)
+    ResponseEntity<ApiErrorResponse> reportNotFound(ReportNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiErrorResponse.of("report not found"));
     }
 
     /**
