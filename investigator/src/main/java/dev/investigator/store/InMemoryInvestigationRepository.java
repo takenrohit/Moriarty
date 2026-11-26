@@ -37,6 +37,24 @@ public class InMemoryInvestigationRepository implements InvestigationRepository 
     }
 
     @Override
+    public boolean restart(Investigation fresh) {
+        Objects.requireNonNull(fresh, "fresh");
+        Objects.requireNonNull(fresh.incidentId(), "fresh.incidentId");
+        if (fresh.status() != InvestigationStatus.PENDING) {
+            throw new IllegalArgumentException("a new investigation must be PENDING, was " + fresh.status());
+        }
+        boolean[] replaced = {false};
+        investigations.computeIfPresent(fresh.incidentId(), (key, current) -> {
+            if (!StatusTransitions.isTerminal(current.status())) {
+                return current;
+            }
+            replaced[0] = true;
+            return fresh;
+        });
+        return replaced[0];
+    }
+
+    @Override
     public boolean transition(String incidentId, InvestigationStatus from, InvestigationStatus to) {
         if (incidentId == null || !StatusTransitions.isAllowed(from, to)) {
             return false;

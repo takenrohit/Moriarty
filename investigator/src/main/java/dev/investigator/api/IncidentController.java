@@ -30,7 +30,9 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Path IDs must match {@value #INCIDENT_ID_REGEX}; any other ID, and any unknown ID, gives 404
  * without a lookup. A report request before the report is stored gives 202 with the Investigation
- * status. JSON times are UTC ISO-8601 strings (Req 17.5).
+ * status. {@code report} and {@code report.md} return the latest report version; while a
+ * re-investigation runs that is still the previous one (CP-80). JSON times are UTC ISO-8601 strings
+ * (Req 17.5).
  *
  * <p>{@code report.md} sets its content type on the response instead of declaring {@code produces},
  * so a 404 for it can still be written as the JSON error body.
@@ -77,6 +79,13 @@ public class IncidentController {
             return ResponseEntity.ok(report.get());
         }
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(new ReportPending(id, investigationStatus(id)));
+    }
+
+    /** One report version: 1 is the first investigation's, later ones are re-investigations' (Req 9.4). */
+    @GetMapping(value = "/{id}/reports/{version}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public InvestigationReport reportVersion(@PathVariable String id, @PathVariable int version) {
+        incident(id);
+        return reports.find(id, version).orElseThrow(() -> new ReportNotFoundException(id));
     }
 
     @GetMapping("/{id}/report.md")

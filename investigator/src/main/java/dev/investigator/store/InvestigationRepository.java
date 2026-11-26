@@ -18,6 +18,16 @@ public interface InvestigationRepository {
     Optional<Investigation> find(String incidentId);
 
     /**
+     * Atomically replaces the Incident's Investigation with {@code fresh} if the current one is terminal
+     * ({@code COMPLETED}, {@code INCONCLUSIVE} or {@code FAILED}), for a re-investigation (Req 9.1, 9.3).
+     *
+     * @return false, changing nothing, if the Incident has no Investigation or it is still
+     *     {@code PENDING}/{@code RUNNING}
+     * @throws IllegalArgumentException if {@code fresh} is not {@code PENDING}
+     */
+    boolean restart(Investigation fresh);
+
+    /**
      * Atomically moves the Investigation from {@code from} to {@code to}.
      *
      * @return true if the status was {@code from} and the pair is allowed by

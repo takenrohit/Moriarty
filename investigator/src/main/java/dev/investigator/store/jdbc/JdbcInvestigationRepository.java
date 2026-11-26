@@ -69,6 +69,30 @@ public class JdbcInvestigationRepository implements InvestigationRepository {
                 .optional();
     }
 
+    /** A single {@code UPDATE ... WHERE status IN (terminal)}, so concurrent restarts cannot both succeed. */
+    @Override
+    public boolean restart(Investigation fresh) {
+        Objects.requireNonNull(fresh, "fresh");
+        Objects.requireNonNull(fresh.incidentId(), "fresh.incidentId");
+        if (fresh.status() != InvestigationStatus.PENDING) {
+            throw new IllegalArgumentException("a new investigation must be PENDING, was " + fresh.status());
+        }
+        return jdbc.sql("""
+                UPDATE investigations
+                   SET status = :status, window_start = CAST(:windowStart AS timestamptz),
+                       window_end = CAST(:windowEnd AS timestamptz), tool_calls_used = :toolCallsUsed,
+                       started_at = NULL, finished_at = NULL, record = CAST(:record AS json)
+                 WHERE incident_id = :incidentId AND status IN ('COMPLETED', 'INCONCLUSIVE', 'FAILED')
+                """)
+                .param("status", fresh.status().name())
+                .param("windowStart", PgValues.timestamp(fresh.windowStart()))
+                .param("windowEnd", PgValues.timestamp(fresh.windowEnd()))
+                .param("toolCallsUsed", fresh.toolCallsUsed())
+                .param("record", PgValues.json(codec, fresh))
+                .param("incidentId", fresh.incidentId())
+                .update() == 1;
+    }
+
     @Override
     public boolean transition(String incidentId, InvestigationStatus from, InvestigationStatus to) {
         if (incidentId == null || !StatusTransitions.isAllowed(from, to)) {

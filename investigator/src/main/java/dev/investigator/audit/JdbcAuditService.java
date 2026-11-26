@@ -87,17 +87,21 @@ public class JdbcAuditService implements AuditService {
                 .update());
     }
 
-    /** Inserts the report as the next version after the stored one (version 2 or later). */
+    /**
+     * Inserts the report as the next version after the stored one (version 2 or later) with kind
+     * {@value JdbcReportRepository#DUPLICATE}, so it never becomes the current report (CP-80).
+     */
     @Override
     public void recordReport(InvestigationReport report) {
         insert("reports", () -> jdbc.sql("""
-                INSERT INTO reports (incident_id, version, status, body, record)
+                INSERT INTO reports (incident_id, version, status, body, record, kind)
                 SELECT :incidentId, GREATEST(COALESCE(MAX(version), :stored), :stored) + 1, :status,
-                       CAST(:body AS jsonb), CAST(:record AS json)
+                       CAST(:body AS jsonb), CAST(:record AS json), :kind
                   FROM reports WHERE incident_id = :incidentId
                 """)
                 .param("incidentId", report.incidentId())
                 .param("stored", JdbcReportRepository.STORED_VERSION)
+                .param("kind", JdbcReportRepository.DUPLICATE)
                 .param("status", report.status() == null ? null : report.status().name())
                 .param("body", jsonb(report))
                 .param("record", PgValues.json(codec, report))

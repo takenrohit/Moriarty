@@ -26,6 +26,11 @@ public final class StatusTransitions {
     private StatusTransitions() {
     }
 
+    /** True for {@code COMPLETED}, {@code INCONCLUSIVE} and {@code FAILED}. */
+    public static boolean isTerminal(InvestigationStatus status) {
+        return status == COMPLETED || status == INCONCLUSIVE || status == FAILED;
+    }
+
     /** Returns whether {@code from → to} is in the allowed set; false when either is null. */
     public static boolean isAllowed(InvestigationStatus from, InvestigationStatus to) {
         return from != null && to != null && ALLOWED.get(from).contains(to);

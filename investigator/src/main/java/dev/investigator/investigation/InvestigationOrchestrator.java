@@ -13,6 +13,8 @@ import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.evidence.EvidenceService;
 import dev.investigator.logging.LogFields;
 import dev.investigator.observability.InvestigatorMetrics;
+import dev.investigator.ratelimit.InvestigationRateLimitedException;
+import dev.investigator.ratelimit.RateLimiter;
 import dev.investigator.report.FallbackReportBuilder;
 import dev.investigator.report.ParseResult;
 import dev.investigator.report.ReportAssembler;
@@ -33,8 +35,10 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -126,14 +130,23 @@ public class InvestigationOrchestrator {
     private final AuditService audit;
     private final InvestigationObservability observability;
     private final InvestigatorMetrics metrics;
+    private final RateLimiter rateLimiter;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    /**
+     * Incidents whose investigation has started in this process and not yet finished its run (report stored,
+     * chat memory evicted). A re-investigation is refused while its Incident is here (Req 9.3).
+     */
+    private final Set<String> active = ConcurrentHashMap.newKeySet();
+    /** Incidents being re-investigated: their report is appended as a new version (Req 9.4). */
+    private final Set<String> reruns = ConcurrentHashMap.newKeySet();
 
     public InvestigationOrchestrator(InvestigationRepository investigations, IncidentRepository incidents,
             ReportRepository reports, EvidenceRepository evidenceRepository, EvidenceService evidenceService,
             InvestigationContextRegistry contexts, InvestigatorAgent agent, PromptInputs promptInputs,
             ReportDraftParser parser, ReportValidator validator, ReportAssembler assembler,
             FallbackReportBuilder fallback, ReportPublisher publisher, InvestigatorProperties properties,
-            Clock clock, AuditService audit, InvestigationObservability observability, InvestigatorMetrics metrics) {
+            Clock clock, AuditService audit, InvestigationObservability observability, InvestigatorMetrics metrics,
+            RateLimiter rateLimiter) {
         this.investigations = investigations;
         this.incidents = incidents;
         this.reports = reports;
@@ -152,6 +165,7 @@ public class InvestigationOrchestrator {
         this.audit = audit;
         this.observability = observability;
         this.metrics = metrics;
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -170,10 +184,72 @@ public class InvestigationOrchestrator {
         InvestigationWindowCalculator.Window window =
                 InvestigationWindowCalculator.window(incident.detectedAt(), properties.window());
         Instant createdAt = clock.instant();
-        Investigation investigation = new Investigation(incidentId, InvestigationStatus.PENDING, window.start(),
-                window.end(), 0, List.of(), List.of(), new IncidentTimeline(List.of()), List.of());
+        Investigation investigation = pending(incidentId, window);
         investigations.create(investigation);
+        active.add(incidentId);
+        return launch(incident, investigation, window, createdAt);
+    }
 
+    /**
+     * Starts a fresh investigation of an existing Incident whose Investigation has ended (Req 9.1 to 9.3).
+     * The new Investigation replaces the ended one with the same window (anchored at the Incident's
+     * {@code detectedAt}, CP-80) and runs like the first; its report is stored as the next report version,
+     * keeping the earlier ones (Req 9.4). It takes a token from the service's investigation bucket.
+     *
+     * @return the new {@code PENDING} Investigation ({@code FAILED} if it could not be started), or empty if
+     *     the Incident does not exist
+     * @throws InvestigationInProgressException if an investigation of the Incident is still
+     *     {@code PENDING}/{@code RUNNING} or finishing
+     * @throws InvestigationRateLimitedException if the service's investigation bucket is empty
+     */
+    public Optional<Investigation> reinvestigate(String incidentId) {
+        Incident incident = incidentId == null ? null : incidents.find(incidentId).orElse(null);
+        if (incident == null) {
+            return Optional.empty();
+        }
+        if (!active.add(incidentId)) {
+            throw new InvestigationInProgressException(incidentId);
+        }
+        boolean launched = false;
+        try {
+            boolean ended = investigations.find(incidentId).map(Investigation::status)
+                    .filter(StatusTransitions::isTerminal).isPresent();
+            if (!ended) {
+                throw new InvestigationInProgressException(incidentId);
+            }
+            String service = incident.affectedService() == null ? "" : incident.affectedService();
+            if (!rateLimiter.tryInvestigation(service)) {
+                log.warn("investigation rate limited; re-investigation rejected incident_id={} service={}",
+                        incidentId, service);
+                throw new InvestigationRateLimitedException(service);
+            }
+            InvestigationWindowCalculator.Window window =
+                    InvestigationWindowCalculator.window(incident.detectedAt(), properties.window());
+            Instant createdAt = clock.instant();
+            Investigation investigation = pending(incidentId, window);
+            if (!investigations.restart(investigation)) {
+                throw new InvestigationInProgressException(incidentId);
+            }
+            reruns.add(incidentId);
+            launched = true;
+            log.info("re-investigation requested incident_id={}", incidentId);
+            return Optional.of(launch(incident, investigation, window, createdAt));
+        } finally {
+            if (!launched) {
+                active.remove(incidentId);
+            }
+        }
+    }
+
+    private static Investigation pending(String incidentId, InvestigationWindowCalculator.Window window) {
+        return new Investigation(incidentId, InvestigationStatus.PENDING, window.start(), window.end(), 0,
+                List.of(), List.of(), new IncidentTimeline(List.of()), List.of());
+    }
+
+    /** Stores the alert Evidence, registers the context and submits {@link #run} (Req 14.1, 14.2). */
+    private Investigation launch(Incident incident, Investigation investigation,
+            InvestigationWindowCalculator.Window window, Instant createdAt) {
+        String incidentId = incident.id();
         try {
             String traceId = newTraceId();
             Evidence alert = evidenceService.storeAlert(incident, traceId);
@@ -198,6 +274,14 @@ public class InvestigationOrchestrator {
      * Does nothing if the Investigation has no context or is no longer {@code PENDING}.
      */
     public void run(String incidentId) {
+        try {
+            runInvestigation(incidentId);
+        } finally {
+            active.remove(incidentId);
+        }
+    }
+
+    private void runInvestigation(String incidentId) {
         InvestigationContext ctx = contexts.find(incidentId).orElse(null);
         if (ctx == null) {
             log.warn("no investigation context; nothing to run incident_id={}", incidentId);
@@ -526,12 +610,23 @@ public class InvestigationOrchestrator {
             }
         } finally {
             contexts.remove(incidentId);
+            active.remove(incidentId);
         }
     }
 
-    /** Stores the report unless one exists, counting a stored one by {@code validationStatus} (Req 2.4). */
+    /**
+     * Stores the report unless one exists, counting a stored one by {@code validationStatus} (Req 2.4). A
+     * re-investigation's report is appended as the next version instead (Req 9.4).
+     */
     private boolean storeReport(InvestigationReport report, String validationStatus) {
-        boolean stored = reports.saveIfAbsent(report);
+        boolean stored;
+        if (reruns.remove(report.incidentId())) {
+            int version = reports.append(report);
+            log.info("re-investigation report stored incident_id={} version={}", report.incidentId(), version);
+            stored = true;
+        } else {
+            stored = reports.saveIfAbsent(report);
+        }
         if (stored) {
             metrics.reportGenerated(validationStatus);
         }

@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.investigator.audit.NoOpAuditService;
 import dev.investigator.observability.InvestigatorMetrics;
+import dev.investigator.ratelimit.RateLimiter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import dev.investigator.config.InvestigatorProperties;
@@ -75,6 +76,7 @@ class InvestigationOrchestratorSmokeTest {
     @Autowired ReportPublisher publisher;
     @Autowired InvestigatorProperties properties;
     @Autowired Clock clock;
+    @Autowired RateLimiter rateLimiter;
 
     @BeforeEach
     void resetModel() {
@@ -231,7 +233,8 @@ class InvestigationOrchestratorSmokeTest {
         InvestigationOrchestrator shortOrchestrator = new InvestigationOrchestrator(investigations, incidents, reports,
                 evidenceRepository, evidenceService, contexts, blockingAgent, promptInputs, parser, validator,
                 assembler, fallback, publisher, shortTimeout, clock, new NoOpAuditService(),
-                new InvestigationObservability(ObservationRegistry.NOOP), new InvestigatorMetrics(new SimpleMeterRegistry()));
+                new InvestigationObservability(ObservationRegistry.NOOP), new InvestigatorMetrics(new SimpleMeterRegistry()),
+                rateLimiter);
         try {
             Incident incident = newIncident();
             long started = System.nanoTime();

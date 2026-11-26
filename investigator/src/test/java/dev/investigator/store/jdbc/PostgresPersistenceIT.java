@@ -85,7 +85,7 @@ class PostgresPersistenceIT {
     @Test
     void flywayMigratedAndTheAppConnectsAsTheNonOwnerRole() {
         assertThat(flyway.info().applied()).extracting(MigrationInfo::getVersion)
-                .extracting(Object::toString).containsExactly("1", "2");
+                .extracting(Object::toString).containsExactly("1", "2", "3");
         assertThat(jdbc.sql("SELECT current_user").query(String.class).single()).isEqualTo(PostgresContainers.APP_ROLE);
         assertThat(jdbc.sql("SELECT rolsuper FROM pg_roles WHERE rolname = current_user").query(Boolean.class)
                 .single()).isFalse();
@@ -143,6 +143,18 @@ class PostgresPersistenceIT {
         assertThat(reports.find(id)).contains(report);
         assertThat(jdbc.sql("SELECT version FROM reports WHERE incident_id = :id ORDER BY version")
                 .param("id", id).query(Integer.class).list()).containsExactly(1, 2);
+
+        // A re-investigation appends the next version, which becomes the current report (Req 9.4).
+        InvestigationReport rerun = report(id, InvestigationStatus.INCONCLUSIVE, alert);
+        assertThat(reports.append(rerun)).isEqualTo(3);
+        assertThat(reports.find(id)).contains(rerun);
+        assertThat(reports.find(id, 1)).contains(report);
+        assertThat(investigations.restart(new Investigation(id, InvestigationStatus.PENDING, T0, T0, 0, List.of(),
+                List.of(), new IncidentTimeline(List.of()), List.of()))).isFalse();
+        assertThat(investigations.transition(id, InvestigationStatus.RUNNING, InvestigationStatus.COMPLETED)).isTrue();
+        assertThat(investigations.restart(new Investigation(id, InvestigationStatus.PENDING, T0, T0, 0, List.of(),
+                List.of(), new IncidentTimeline(List.of()), List.of()))).isTrue();
+        assertThat(investigations.find(id)).map(Investigation::status).contains(InvestigationStatus.PENDING);
     }
 
     @Test
