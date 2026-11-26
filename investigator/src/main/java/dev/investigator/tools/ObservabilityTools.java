@@ -25,6 +25,7 @@ import dev.investigator.integration.traces.TraceClient;
 import dev.investigator.integration.traces.TraceRecord;
 import dev.investigator.integration.traces.TraceSearchResult;
 import dev.investigator.investigation.InvestigationContext;
+import dev.investigator.investigation.InvestigationObservability;
 import dev.investigator.investigation.InvestigationScope;
 import dev.investigator.logging.LogFields;
 import dev.investigator.runbook.RunbookCatalog;
@@ -32,6 +33,7 @@ import dev.investigator.runbook.RunbookMatch;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
+import io.micrometer.observation.Observation;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -85,12 +87,13 @@ public class ObservabilityTools {
     private final InvestigatorProperties.Tools limits;
     private final Clock clock;
     private final AuditService audit;
+    private final InvestigationObservability observability;
 
     public ObservabilityTools(ToolGuard guard, EvidenceService evidence,
             MetricsClient metrics, LogClient logs, TraceClient traces, ChangeClient changes,
             RunbookCatalog runbooks, MetricSummarizer metricSummarizer, LogSummarizer logSummarizer,
             TraceSummarizer traceSummarizer, ObjectMapper mapper, InvestigatorProperties properties,
-            Clock clock, AuditService audit) {
+            Clock clock, AuditService audit, InvestigationObservability observability) {
         this.guard = guard;
         this.evidence = evidence;
         this.metrics = metrics;
@@ -105,6 +108,7 @@ public class ObservabilityTools {
         this.limits = properties.tools();
         this.clock = clock;
         this.audit = audit;
+        this.observability = observability;
     }
 
     @Tool("Query a metric time series for one service. start/end are ISO-8601 instants, e.g. 2026-11-23T14:00:00Z."
@@ -241,19 +245,26 @@ public class ObservabilityTools {
     private String invoke(String toolName, String incidentId, Map<String, Object> args,
             Function<InvestigationContext, Outcome> body) {
         long started = System.nanoTime();
-        Outcome outcome;
-        try {
+        // tool.<name> span, a child of the investigation span in scope on the agent thread (Req 1.2).
+        Observation observation = observability.tool(toolName).start();
+        Outcome outcome = null;
+        try (Observation.Scope scope = observation.openScope()) {
             InvestigationContext ctx = guard.begin(incidentId, toolName);
             outcome = body.apply(ctx);
         } catch (ToolRejectedException e) {
             outcome = Outcome.rejected(e.toResult());
         } catch (RuntimeException e) {
             log.atWarn().addKeyValue(LogFields.TOOL_NAME, toolName).setCause(e).log("tool call failed");
+            observation.error(e);
             // A client hint is a constant text (never the query or backend output), so it is safe to return.
             String hint = e instanceof IntegrationCallException call && call.hint() != null
                     ? call.hint()
                     : INTEGRATION_HINT;
             outcome = Outcome.failed(ToolResults.error(INTEGRATION_FAILED, hint));
+        } finally {
+            observation.lowCardinalityKeyValue(InvestigationObservability.STATUS,
+                    outcome == null ? "error" : outcome.name);
+            observation.stop();
         }
         long durationMs = Duration.ofNanos(System.nanoTime() - started).toMillis();
         logFinished(toolName, outcome, durationMs);

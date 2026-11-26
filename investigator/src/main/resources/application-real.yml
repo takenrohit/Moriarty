@@ -1,6 +1,11 @@
 # "real" profile: each integration whose base URL is non-blank uses its real client; a blank or unset
 # URL falls back to the mock client (Req 7.1, 7.2, CP-61). Every value comes from the environment
 # (Req 7.5, 7.6, 15.2); credentials default to empty and are never logged.
+management:
+  otlp:
+    tracing:
+      # Investigator spans over OTLP/HTTP to the Compose otel-collector, which forwards them to Tempo (CP-69).
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://otel-collector:4318/v1/traces}
 investigator:
   integrations:
     metrics:

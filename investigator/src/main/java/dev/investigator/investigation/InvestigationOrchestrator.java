@@ -23,6 +23,7 @@ import dev.investigator.store.EvidenceRepository;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
 import dev.investigator.store.ReportRepository;
+import io.micrometer.observation.Observation;
 import jakarta.annotation.PreDestroy;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -119,6 +120,7 @@ public class InvestigationOrchestrator {
     private final InvestigatorProperties properties;
     private final Clock clock;
     private final AuditService audit;
+    private final InvestigationObservability observability;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public InvestigationOrchestrator(InvestigationRepository investigations, IncidentRepository incidents,
@@ -126,7 +128,7 @@ public class InvestigationOrchestrator {
             InvestigationContextRegistry contexts, InvestigatorAgent agent, PromptInputs promptInputs,
             ReportDraftParser parser, ReportValidator validator, ReportAssembler assembler,
             FallbackReportBuilder fallback, ReportPublisher publisher, InvestigatorProperties properties,
-            Clock clock, AuditService audit) {
+            Clock clock, AuditService audit, InvestigationObservability observability) {
         this.investigations = investigations;
         this.incidents = incidents;
         this.reports = reports;
@@ -143,6 +145,7 @@ public class InvestigationOrchestrator {
         this.properties = properties;
         this.clock = clock;
         this.audit = audit;
+        this.observability = observability;
     }
 
     /**
@@ -199,20 +202,31 @@ public class InvestigationOrchestrator {
                 log.warn("investigation is not PENDING; not running it incident_id={}", incidentId);
                 return;
             }
-            AtomicBoolean concluded = new AtomicBoolean();
-            Outcome outcome;
-            try {
-                ctx.accepting().set(true);
-                incidents.updateStatus(incidentId, IncidentStatus.INVESTIGATING);
-                log.info("investigation running incident_id={}", incidentId);
-                outcome = investigate(ctx, concluded);
+            // The investigation span (Req 1.1, 1.4); its scope is also opened on each agent thread.
+            Observation observation = observability.investigation(incidentId, incidents.find(incidentId).orElse(null))
+                    .start();
+            try (Observation.Scope scope = observation.openScope()) {
+                AtomicBoolean concluded = new AtomicBoolean();
+                Outcome outcome;
+                try {
+                    ctx.accepting().set(true);
+                    incidents.updateStatus(incidentId, IncidentStatus.INVESTIGATING);
+                    log.info("investigation running incident_id={}", incidentId);
+                    outcome = investigate(ctx, concluded);
+                } catch (RuntimeException e) {
+                    log.error("investigation failed unexpectedly incident_id={}", incidentId, e);
+                    stopAccepting(ctx, concluded);
+                    outcome = fallbackOutcome(ctx.incidentId(), InvestigationStatus.FAILED,
+                            INTERNAL_ERROR + e.getClass().getSimpleName(), List.of());
+                }
+                observation.lowCardinalityKeyValue(InvestigationObservability.STATUS, outcome.status().name());
+                conclude(ctx, InvestigationStatus.RUNNING, outcome, concluded);
             } catch (RuntimeException e) {
-                log.error("investigation failed unexpectedly incident_id={}", incidentId, e);
-                stopAccepting(ctx, concluded);
-                outcome = fallbackOutcome(ctx.incidentId(), InvestigationStatus.FAILED,
-                        INTERNAL_ERROR + e.getClass().getSimpleName(), List.of());
+                observation.error(e);
+                throw e;
+            } finally {
+                observation.stop();
             }
-            conclude(ctx, InvestigationStatus.RUNNING, outcome, concluded);
         } finally {
             clearMdc();
         }
@@ -293,9 +307,12 @@ public class InvestigationOrchestrator {
 
     private Callable<String> agentCall(InvestigationContext ctx, AtomicBoolean concluded, Callable<String> call) {
         String incidentId = ctx.incidentId();
+        // Captured on the run thread, so tool and LLM spans on the agent thread nest under the
+        // investigation span (Req 1.2, 1.3).
+        Observation parent = observability.current();
         return () -> {
             putMdc(ctx);
-            try {
+            try (Observation.Scope scope = InvestigationObservability.openScope(parent)) {
                 return call.call();
             } finally {
                 if (concluded.get()) {

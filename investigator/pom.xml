@@ -57,6 +57,16 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
+        <!-- Investigator spans (CP-69): Observation API -> Micrometer Tracing -> OpenTelemetry SDK. Spring
+             Boot adds the OTLP span exporter only when management.otlp.tracing.endpoint is set. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
         <!-- PostgreSQL persistence ("postgres" profile only; DataSourceAutoConfiguration is excluded
              in application.yml otherwise, so the default context needs no database). -->
         <dependency>

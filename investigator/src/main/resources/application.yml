@@ -26,6 +26,11 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+  tracing:
+    sampling:
+      probability: 1.0        # every investigation is traced; spans stay in memory without an endpoint
+  # management.otlp.tracing.endpoint is set only in application-real.yml: Spring Boot treats any value,
+  # even an empty one, as "configured" and an empty URL fails the exporter at startup (CP-78).
 
 investigator:
   display-timezone: ${INVESTIGATOR_DISPLAY_TIMEZONE:Asia/Kolkata}

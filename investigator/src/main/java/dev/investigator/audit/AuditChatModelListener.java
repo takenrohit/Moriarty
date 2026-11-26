@@ -2,6 +2,7 @@ package dev.investigator.audit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.investigator.config.JacksonConfig;
+import dev.investigator.investigation.InvestigationObservability;
 import dev.investigator.logging.LogFields;
 import dev.investigator.store.jdbc.PgValues;
 import dev.langchain4j.data.message.ChatMessageSerializer;
@@ -13,6 +14,7 @@ import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.ChatResponseMetadata;
 import dev.langchain4j.model.output.TokenUsage;
+import io.micrometer.observation.Observation;
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -32,27 +34,44 @@ import org.springframework.stereotype.Component;
 public class AuditChatModelListener implements ChatModelListener {
 
     private static final String STARTED = AuditChatModelListener.class.getName() + ".started";
+    private static final String OBSERVATION = AuditChatModelListener.class.getName() + ".observation";
 
     private final AuditService audit;
+    private final InvestigationObservability observability;
     private final ObjectMapper codec = JacksonConfig.jsonCodec();
 
-    public AuditChatModelListener(AuditService audit) {
+    public AuditChatModelListener(AuditService audit, InvestigationObservability observability) {
         this.audit = audit;
+        this.observability = observability;
     }
 
     @Override
     public void onRequest(ChatModelRequestContext context) {
         context.attributes().put(STARTED, System.nanoTime());
+        // llm.chat span, a child of the investigation span in scope on the agent thread (Req 1.3).
+        guarded(() -> context.attributes().put(OBSERVATION,
+                observability.llmChat(requestModel(context.chatRequest())).start()));
     }
 
     @Override
     public void onResponse(ChatModelResponseContext context) {
+        ChatResponse response = context.chatResponse();
+        ChatResponseMetadata metadata = response == null ? null : response.metadata();
+        TokenUsage usage = metadata == null ? null : metadata.tokenUsage();
+        String model = metadata != null && metadata.modelName() != null
+                ? metadata.modelName() : requestModel(context.chatRequest());
         guarded(() -> {
-            ChatResponse response = context.chatResponse();
-            ChatResponseMetadata metadata = response == null ? null : response.metadata();
-            TokenUsage usage = metadata == null ? null : metadata.tokenUsage();
-            String model = metadata != null && metadata.modelName() != null
-                    ? metadata.modelName() : requestModel(context.chatRequest());
+            if (context.attributes().get(OBSERVATION) instanceof Observation observation) {
+                observation.lowCardinalityKeyValue(InvestigationObservability.MODEL,
+                        model == null ? InvestigationObservability.UNKNOWN : model);
+                observation.lowCardinalityKeyValue(InvestigationObservability.STATUS, "success");
+                Integer total = usage == null ? null : usage.totalTokenCount();
+                observation.highCardinalityKeyValue(InvestigationObservability.TOKENS,
+                        total == null ? InvestigationObservability.UNKNOWN : total.toString());
+                observation.stop();
+            }
+        });
+        guarded(() -> {
             String responseJson = response == null || response.aiMessage() == null
                     ? null : ChatMessageSerializer.messageToJson(response.aiMessage());
             audit.recordLlmExchange(new AuditService.LlmExchange(MDC.get(LogFields.INCIDENT_ID), model,
@@ -64,6 +83,15 @@ public class AuditChatModelListener implements ChatModelListener {
 
     @Override
     public void onError(ChatModelErrorContext context) {
+        guarded(() -> {
+            if (context.attributes().get(OBSERVATION) instanceof Observation observation) {
+                observation.lowCardinalityKeyValue(InvestigationObservability.STATUS, "error");
+                if (context.error() != null) {
+                    observation.error(context.error());
+                }
+                observation.stop();
+            }
+        });
         guarded(() -> {
             Map<String, Object> error = new LinkedHashMap<>();
             // The class name only: provider error messages can echo request details.
