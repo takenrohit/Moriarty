@@ -10,9 +10,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 import java.util.SplittableRandom;
 
 /**
@@ -21,8 +23,8 @@ import java.util.SplittableRandom;
  * expected parse result.
  *
  * <p>Prometheus: {@link #prometheusMatrix} builds a {@code query_range} matrix body with a single series, as
- * the client requires (CP-61). Loki: {@link #lokiStreams} builds a {@code query_range} streams body. Tempo
- * and GitHub generators are added by later tasks.
+ * the client requires (CP-61). Loki: {@link #lokiStreams} builds a {@code query_range} streams body. Tempo:
+ * {@link #tempoSearch} builds an {@code /api/search} body. GitHub generators are added by a later task.
  */
 public final class ResponseGenerators {
 
@@ -38,6 +40,8 @@ public final class ResponseGenerators {
         "PaymentGatewayTimeoutException: call to payment-gateway timed out after 5000 ms",
         "checkout completed", "request completed", "", "  padded line  ", "quote \" and backslash \\ inside",
         "unicode: café ✓ 漢字", "tab\tand\nnewline", "{\"json\":\"line\",\"n\":1}"};
+    private static final String[] TEMPO_SERVICES = {"checkout-api", "payment-gateway", "payment-provider"};
+    private static final String[] TEMPO_OPERATIONS = {"POST /checkout", "POST /charge", "GET /health", "SELECT"};
 
     private ResponseGenerators() {
     }
@@ -177,6 +181,132 @@ public final class ResponseGenerators {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /**
+     * What a correct client must keep of one generated Tempo trace.
+     *
+     * @param traceId the {@code traceID}
+     * @param start the {@code startTimeUnixNano} as an instant
+     * @param error whether any of its spans has {@code status = error}
+     * @param services the services of its distinct spans
+     */
+    public record TempoTrace(String traceId, Instant start, boolean error, Set<String> services) {
+
+        public TempoTrace {
+            services = Set.copyOf(services);
+        }
+    }
+
+    /**
+     * A Tempo search body and its traces.
+     *
+     * @param body the JSON response body
+     * @param traces every trace in the body, sorted by start time (times are distinct)
+     */
+    public record TempoSearch(String body, List<TempoTrace> traces) {
+
+        public TempoSearch {
+            traces = List.copyOf(traces);
+        }
+    }
+
+    /**
+     * A Tempo {@code /api/search} body.
+     *
+     * <p>The trace count is 0, 1, {@code limit − 1}, {@code limit}, {@code limit + 1} or random in
+     * {@code [0, limit + 20]}, in shuffled order (Tempo does not sort by start). Each trace has 0 to 3
+     * {@code spanSets} (the older single {@code spanSet} in about 1 trace in 5) of 0 to 4 spans; a span may
+     * repeat in a second span set with the same {@code spanID}. A span names its service with a
+     * {@code service.name} or {@code resource.service.name} attribute, or omits it (the trace's
+     * {@code rootServiceName} applies); its status is {@code error}, {@code ok} or absent. When there are no
+     * traces the {@code traces} field is an empty array or omitted.
+     */
+    public static TempoSearch tempoSearch(SplittableRandom r, int limit) {
+        int count = sampleCount(r, limit);
+        ObjectNode root = JSON.createObjectNode();
+        List<TempoTrace> expected = new ArrayList<>(count);
+        List<ObjectNode> traces = new ArrayList<>(count);
+        long nanos = (ANCHOR_SECONDS - r.nextLong(0, 86_400)) * 1_000_000_000L + r.nextLong(0, 1_000_000_000L);
+        for (int i = 0; i < count; i++) {
+            nanos += 1 + r.nextLong(0, 60_000_000_000L);
+            String traceId = String.format("%016x%016x", r.nextLong(), i);
+            String rootService = TEMPO_SERVICES[r.nextInt(TEMPO_SERVICES.length)];
+            ObjectNode trace = JSON.createObjectNode().put("traceID", traceId).put("rootServiceName", rootService)
+                    .put("rootTraceName", "POST /checkout").put("startTimeUnixNano", Long.toString(nanos));
+            if (r.nextInt(4) != 0) {
+                trace.put("durationMs", r.nextInt(1, 10_000));
+            }
+            Set<String> services = new HashSet<>();
+            boolean error = false;
+            List<ArrayNode> spanArrays = new ArrayList<>();
+            int setCount = r.nextInt(4);
+            boolean legacy = setCount > 0 && r.nextInt(5) == 0;
+            ArrayNode sets = legacy ? null : trace.putArray("spanSets");
+            for (int s = 0; s < (legacy ? 1 : setCount); s++) {
+                ObjectNode set = legacy ? trace.putObject("spanSet") : sets.addObject();
+                ArrayNode spans = set.putArray("spans");
+                spanArrays.add(spans);
+                int spanCount = r.nextInt(5);
+                set.put("matched", spanCount);
+                for (int k = 0; k < spanCount; k++) {
+                    if (s > 0 && r.nextInt(4) == 0 && spanArrays.get(0).size() > 0) {
+                        // Same span repeated in a later span set; it counts once.
+                        spans.add(spanArrays.get(0).get(r.nextInt(spanArrays.get(0).size())).deepCopy());
+                        continue;
+                    }
+                    ObjectNode span = spans.addObject().put("spanID", String.format("%08x%04x%04x", r.nextInt(), s, k))
+                            .put("name", TEMPO_OPERATIONS[r.nextInt(TEMPO_OPERATIONS.length)])
+                            .put("startTimeUnixNano", Long.toString(nanos + r.nextLong(0, 1_000_000_000L)))
+                            .put("durationNanos", Long.toString(r.nextLong(1, 10_000_000_000L)));
+                    ArrayNode attributes = span.putArray("attributes");
+                    String service = rootService;
+                    switch (r.nextInt(3)) {
+                        case 0 -> {
+                            service = TEMPO_SERVICES[r.nextInt(TEMPO_SERVICES.length)];
+                            stringAttribute(attributes, "service.name", service);
+                        }
+                        case 1 -> {
+                            service = TEMPO_SERVICES[r.nextInt(TEMPO_SERVICES.length)];
+                            stringAttribute(attributes, "resource.service.name", service);
+                        }
+                        default -> {
+                        }
+                    }
+                    services.add(service);
+                    switch (r.nextInt(3)) {
+                        case 0 -> {
+                            stringAttribute(attributes, "status", "error");
+                            error = true;
+                        }
+                        case 1 -> stringAttribute(attributes, "status", "ok");
+                        default -> {
+                        }
+                    }
+                    if (r.nextBoolean()) {
+                        stringAttribute(attributes, "peer.service", TEMPO_SERVICES[r.nextInt(TEMPO_SERVICES.length)]);
+                    }
+                }
+            }
+            traces.add(trace);
+            expected.add(new TempoTrace(traceId, Instant.ofEpochSecond(nanos / 1_000_000_000L,
+                    nanos % 1_000_000_000L), error, services));
+        }
+        Collections.shuffle(traces, new Random(r.nextLong()));
+        if (count > 0 || r.nextBoolean()) {
+            root.putArray("traces").addAll(traces);
+        }
+        root.putObject("metrics").put("inspectedBytes", "1024").put("completedJobs", 1).put("totalJobs", 1);
+        try {
+            return new TempoSearch(JSON.writeValueAsString(root), expected);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static void stringAttribute(ArrayNode attributes, String key, String value) {
+        ObjectNode attribute = attributes.addObject().put("key", key);
+        attribute.putObject("value").put("stringValue", value);
     }
 
     private static int sampleCount(SplittableRandom r, int maxPoints) {
