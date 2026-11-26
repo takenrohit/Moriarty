@@ -52,6 +52,9 @@ investigator:
       dependencies: [payment-provider]
     payment-provider:
       dependencies: []
+  webhook:
+    secret: ${WEBHOOK_SECRET:}                    # blank: alert endpoints accept unauthenticated requests
+    service-label: ${WEBHOOK_SERVICE_LABEL:service}
   mock:
     default-anchor: 2026-11-23T14:40:00Z   # Scenario_Anchor when no investigation scope is bound
   llm:
