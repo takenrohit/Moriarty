@@ -5,6 +5,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -52,6 +53,26 @@ public class JdbcApprovalRepository implements ApprovalRepository {
                 .param("id", approvalId)
                 .query((rs, n) -> read(rs))
                 .optional();
+    }
+
+    /**
+     * Latest row per {@code approval_id} for the incident; SELECT only. Rows from before V4__approval_id.sql
+     * have no {@code approval_id} and are skipped.
+     */
+    @Override
+    public List<Approval> findByIncident(String incidentId) {
+        return jdbc.sql("""
+                SELECT * FROM (
+                    SELECT DISTINCT ON (approval_id)
+                           approval_id, incident_id, action, status, requested_at, decided_by, decided_at
+                      FROM approvals WHERE incident_id = :incidentId AND approval_id IS NOT NULL
+                     ORDER BY approval_id, id DESC
+                ) latest
+                 ORDER BY requested_at, approval_id
+                """)
+                .param("incidentId", incidentId)
+                .query((rs, n) -> read(rs))
+                .list();
     }
 
     @Override

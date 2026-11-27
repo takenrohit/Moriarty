@@ -1,7 +1,10 @@
 package dev.investigator.report;
 
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -25,6 +28,14 @@ public class InMemoryApprovalRepository implements ApprovalRepository {
     @Override
     public Optional<Approval> find(String approvalId) {
         return Optional.ofNullable(approvals.get(approvalId));
+    }
+
+    @Override
+    public List<Approval> findByIncident(String incidentId) {
+        return approvals.values().stream()
+                .filter(a -> Objects.equals(a.incidentId(), incidentId))
+                .sorted(Comparator.comparing(Approval::requestedAt).thenComparing(Approval::id))
+                .toList();
     }
 
     @Override

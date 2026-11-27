@@ -59,4 +59,22 @@ class JdbcApprovalRepositoryIT {
         assertThat(jdbc.sql("SELECT count(*) FROM approvals WHERE approval_id = 'apr-0000000000a1'")
                 .query(Long.class).single()).isEqualTo(2L);
     }
+
+    @Test
+    void findByIncidentReturnsTheNewestStateOfEachApprovalForThatIncidentOnly() {
+        Instant requested = Instant.parse("2026-11-23T15:00:00Z");
+        Instant decided = requested.plusSeconds(300);
+        approvals.save(Approval.pending("apr-0000000000b1", "inc-0000000000b1", "#1 ROLLBACK: roll back", requested));
+        approvals.save(Approval.pending("apr-0000000000b2", "inc-0000000000b1", "#3 SCALE: add replicas",
+                requested.plusSeconds(10)));
+        approvals.save(Approval.pending("apr-0000000000c1", "inc-0000000000c1", "#1 ROLLBACK: other", requested));
+        assertThat(approvals.decide("apr-0000000000b1", Approval.Status.APPROVED, "slack:U1", decided)).isTrue();
+
+        assertThat(approvals.findByIncident("inc-0000000000b1")).containsExactly(
+                new Approval("apr-0000000000b1", "inc-0000000000b1", "#1 ROLLBACK: roll back",
+                        Approval.Status.APPROVED, requested, "slack:U1", decided),
+                Approval.pending("apr-0000000000b2", "inc-0000000000b1", "#3 SCALE: add replicas",
+                        requested.plusSeconds(10)));
+        assertThat(approvals.findByIncident("inc-0000000000ff")).isEmpty();
+    }
 }

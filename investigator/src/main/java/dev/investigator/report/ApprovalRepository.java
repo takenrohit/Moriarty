@@ -1,6 +1,7 @@
 package dev.investigator.report;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /** Store of {@link Approval}s: in memory by default, the {@code approvals} table under {@code postgres}. */
@@ -11,6 +12,12 @@ public interface ApprovalRepository {
 
     /** The current state of an approval: its decision once decided, else the pending request. */
     Optional<Approval> find(String approvalId);
+
+    /**
+     * The current state of every approval for {@code incidentId}, ordered by request time then approval ID;
+     * read-only, empty when there are none.
+     */
+    List<Approval> findByIncident(String incidentId);
 
     /**
      * Records {@code decision} if the approval exists and is still {@code PENDING}; atomic, so of two
