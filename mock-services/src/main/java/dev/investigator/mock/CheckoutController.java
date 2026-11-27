@@ -21,6 +21,13 @@ class CheckoutController {
 
     private static final Logger log = LoggerFactory.getLogger(CheckoutController.class);
 
+    /**
+     * Fake PII in the timeout log line, for the redaction demo (reliability task 12): the Visa test card
+     * number and an obviously fake bearer token. The investigator must redact both before the LLM sees them.
+     */
+    static final String FAKE_CARD = "4111 1111 1111 1111";
+    static final String FAKE_BEARER_TOKEN = "demo-fake-token-NOT-A-SECRET";
+
     private final RestClient gateway;
 
     CheckoutController(RestClient.Builder builder, MockProperties properties) {
@@ -49,7 +56,8 @@ class CheckoutController {
 
     @ExceptionHandler(PaymentGatewayTimeoutException.class)
     ResponseEntity<Map<String, String>> onGatewayTimeout(PaymentGatewayTimeoutException e) {
-        log.error("Checkout failed with PaymentGatewayTimeoutException: {}", e.getMessage(), e);
+        log.error("Checkout failed with PaymentGatewayTimeoutException: {} (card {}, Authorization: Bearer {})",
+                e.getMessage(), FAKE_CARD, FAKE_BEARER_TOKEN, e);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(Map.of("error", "payment_gateway_timeout", "message", e.getMessage()));
     }
