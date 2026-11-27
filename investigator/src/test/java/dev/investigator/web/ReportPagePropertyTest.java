@@ -47,6 +47,11 @@ import org.springframework.test.web.servlet.MockMvc;
  * and carries the 5-second meta refresh and the live-poll marker; for any Finished_Status both are absent.
  * <b>Validates: Requirements 4.2, 4.4, 4.5</b>
  *
+ * <p>Property 6: for any hypothesis on a finished Report_Page, its confidence is shown as a labelled badge
+ * and its cause status reads exactly {@code established cause} when {@code establishedCause} is true and
+ * {@code correlated, not established} otherwise, never both.
+ * <b>Validates: Requirements 5.1, 5.2</b>
+ *
  * <p>All seeds share the Spring context of the other {@code @InvestigatorSpringBootTest} MockMvc tests and
  * store their data under fresh random incident ids, so seeds and property methods never collide. Data is
  * written straight to the stores (no investigation is started), so no Scripted_Chat_Model calls happen.
@@ -63,6 +68,9 @@ class ReportPagePropertyTest {
     private static final List<String> REPORT_SECTIONS = List.of("id=\"summary\"", "id=\"hypotheses\"",
             "id=\"timeline\"", "id=\"actions\"", "id=\"open-questions\"", "id=\"evidence\"", "id=\"ev-",
             "id=\"investigation-failed\"");
+    /** Cause-status labels of a hypothesis (Req 5.2). */
+    private static final String ESTABLISHED = "established cause";
+    private static final String CORRELATED = "correlated, not established";
 
     @Autowired
     private MockMvc mvc;
@@ -108,7 +116,51 @@ class ReportPagePropertyTest {
         });
     }
 
+    // Feature: investigator-web-ui, Property 6: Hypotheses show confidence and an unambiguous cause status
+    @ParameterizedTest(name = "seed={0}")
+    @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
+    void hypothesesShowConfidenceAndExactlyOneCauseLabel(long seed) {
+        PropertySeeds.check(seed, random -> {
+            String id = storedIncident(random);
+            InvestigationReport report = report(id, random, 1 + random.nextInt(5));
+            reports.saveIfAbsent(report);
+            investigation(id, InvestigationStatus.COMPLETED);
+
+            String page = page(id);
+            int start = page.indexOf("id=\"hypotheses\"");
+            int end = page.indexOf("id=\"timeline\"");
+            assertThat(start).as("hypotheses section").isNotNegative();
+            assertThat(end).as("timeline section after hypotheses").isGreaterThan(start);
+            String[] items = page.substring(start, end).split("class=\"hypothesis\"", -1);
+            List<Hypothesis> hypotheses = report.hypotheses();
+            assertThat(items).as("one list item per hypothesis").hasSize(hypotheses.size() + 1);
+
+            for (int i = 0; i < hypotheses.size(); i++) {
+                Hypothesis h = hypotheses.get(i);
+                String item = items[i + 1];
+                String confidence = h.confidence().name();
+                String expected = h.establishedCause() ? ESTABLISHED : CORRELATED;
+                String other = h.establishedCause() ? CORRELATED : ESTABLISHED;
+                assertThat(item).as("hypothesis %d confidence badge", i + 1)
+                        .contains("class=\"badge badge-confidence badge-confidence-" + confidence + "\">Confidence: "
+                                + confidence + "</span>");
+                assertThat(occurrences(item, ">" + expected + "</span>")).as("hypothesis %d label %s", i + 1, expected)
+                        .isEqualTo(1);
+                assertThat(occurrences(item, ">" + other + "</span>")).as("hypothesis %d label %s", i + 1, other)
+                        .isZero();
+            }
+        });
+    }
+
     // ---- shared helpers for the Report_Page properties ----
+
+    private static int occurrences(String text, String needle) {
+        int count = 0;
+        for (int at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + needle.length())) {
+            count++;
+        }
+        return count;
+    }
 
     /** {@code GET /incidents/{id}} as HTML, expecting 200. */
     private String page(String id) throws Exception {
@@ -156,12 +208,16 @@ class ReportPagePropertyTest {
         }
     }
 
-    /**
-     * A report with 1 to 3 Evidence_Entries, one hypothesis and one action per entry citing it, and a
-     * timeline entry citing all of them.
-     */
+    /** A report with 1 to 3 Evidence_Entries; see {@link #report(String, SplittableRandom, int)}. */
     private static InvestigationReport report(String id, SplittableRandom random) {
-        int count = 1 + random.nextInt(3);
+        return report(id, random, 1 + random.nextInt(3));
+    }
+
+    /**
+     * A report with {@code count} Evidence_Entries, one hypothesis (random Confidence and establishedCause)
+     * and one action per entry citing it, and a timeline entry citing all of them.
+     */
+    private static InvestigationReport report(String id, SplittableRandom random, int count) {
         List<EvidenceRef> evidence = new ArrayList<>();
         List<Hypothesis> hypotheses = new ArrayList<>();
         List<RecommendedAction> actions = new ArrayList<>();
