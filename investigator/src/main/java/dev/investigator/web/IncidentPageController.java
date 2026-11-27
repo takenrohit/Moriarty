@@ -3,6 +3,7 @@ package dev.investigator.web;
 import dev.investigator.alert.AlertIntakeService;
 import dev.investigator.alert.AlertValidationException;
 import dev.investigator.api.AlertAcceptedResponse;
+import dev.investigator.api.HttpUrlValidator;
 import dev.investigator.api.IncidentController;
 import dev.investigator.api.MockAlertRequest;
 import dev.investigator.config.WebhookProperties;
@@ -10,8 +11,10 @@ import dev.investigator.domain.Incident;
 import dev.investigator.domain.Investigation;
 import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.ratelimit.InvestigationRateLimitedException;
+import dev.investigator.report.ApprovalRepository;
 import dev.investigator.report.DisplayTimeFormatter;
 import dev.investigator.report.ReportRenderer;
+import dev.investigator.report.ReportView;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
 import dev.investigator.store.ReportRepository;
@@ -21,9 +24,11 @@ import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import org.springframework.http.HttpStatus;
@@ -58,9 +63,14 @@ public class IncidentPageController {
     static final String RATE_LIMITED_MESSAGE =
             "The investigation rate limit for this service is reached; no alert was created. Try again later.";
 
+    /** Finished_Status values: the Report_Page stops refreshing and shows the report or failure (Req 4.5). */
+    static final Set<String> FINISHED = Set.of(InvestigationStatus.COMPLETED.name(),
+            InvestigationStatus.INCONCLUSIVE.name(), InvestigationStatus.FAILED.name());
+
     private final IncidentRepository incidents;
     private final InvestigationRepository investigations;
     private final ReportRepository reports;
+    private final ApprovalRepository approvals;
     private final ReportRenderer renderer;
     private final AlertIntakeService intake;
     private final WebhookProperties webhook;
@@ -69,10 +79,11 @@ public class IncidentPageController {
 
     public IncidentPageController(IncidentRepository incidents, InvestigationRepository investigations,
             ReportRepository reports, ReportRenderer renderer, AlertIntakeService intake, WebhookProperties webhook,
-            Validator validator, Clock clock) {
+            Validator validator, Clock clock, ApprovalRepository approvals) {
         this.incidents = incidents;
         this.investigations = investigations;
         this.reports = reports;
+        this.approvals = approvals;
         this.renderer = renderer;
         this.intake = intake;
         this.webhook = webhook;
@@ -170,8 +181,26 @@ public class IncidentPageController {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
         Incident incident = incidents.find(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-        model.addAttribute("incident", row(incident));
-        model.addAttribute("report", reports.find(id).map(r -> renderer.view(incident, r)).orElse(null));
+        IncidentRow row = row(incident);
+        ReportView report = reports.find(id).map(r -> renderer.view(incident, r)).orElse(null);
+        Set<String> knownEvidenceIds = new HashSet<>();
+        List<ActionApprovalView> actionApprovals = List.of();
+        if (report != null) {
+            report.evidence().forEach(e -> knownEvidenceIds.add(e.id()));
+            actionApprovals = ActionApprovalView.of(report.actions(), approvals.findByIncident(id), renderer.times());
+        }
+        model.addAttribute("incident", row);
+        model.addAttribute("report", report);
+        model.addAttribute("reportReady", report != null);
+        // The latest Investigation drives the page: while it is not finished the report sections are
+        // replaced by the in-progress indicator, even if an earlier report version is stored (Req 4.2).
+        model.addAttribute("finished", FINISHED.contains(row.investigationStatus()));
+        model.addAttribute("knownEvidenceIds", Set.copyOf(knownEvidenceIds));
+        model.addAttribute("actionApprovals", actionApprovals);
+        model.addAttribute("dashboardLinks", incident.dashboardLinks().stream()
+                .filter(Objects::nonNull)
+                .map(link -> new DashboardLink(link, HttpUrlValidator.isHttpUrl(link)))
+                .toList());
         model.addAttribute("zone", renderer.times().zone().getId());
         return "incident";
     }
@@ -204,6 +233,13 @@ public class IncidentPageController {
         return new IncidentRow(incident.id(), incident.title(), incident.affectedService(), severity,
                 incident.detectedAt() == null ? "" : times.dateTime(incident.detectedAt()),
                 incident.status() == null ? "" : incident.status().name(), status.name());
+    }
+
+    /**
+     * A dashboard link of the Incident; {@code linkable} only when it passes the absolute http(s) URL check,
+     * otherwise the page shows it as plain text (Req 9.3).
+     */
+    public record DashboardLink(String url, boolean linkable) {
     }
 
     /** One Incident as shown on the pages; {@code detected} is in the Display_Timezone. */

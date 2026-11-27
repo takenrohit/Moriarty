@@ -43,6 +43,46 @@
       });
   }
 
+  // Report page: while the investigation is not finished, poll the unchanged incident JSON every
+  // 3 seconds and reload once investigationStatus is a Finished_Status, so the server renders the
+  // report or the failure (Req 4.3). It does not poll /report: during a re-investigation the earlier
+  // report stays stored there and would trigger a reload loop.
+  var REPORT_POLL_MS = 3000;
+  var FINISHED = ['COMPLETED', 'INCONCLUSIVE', 'FAILED'];
+  var STATUS_NAME = /^[A-Z_]+$/;
+
+  function pollIncident(id) {
+    fetch('/api/v1/incidents/' + encodeURIComponent(id), {
+      headers: { Accept: 'application/json' }, cache: 'no-store'
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error('poll failed');
+        }
+        return response.json();
+      })
+      .then(function (body) {
+        var status = body && body.investigationStatus;
+        if (typeof status !== 'string' || !STATUS_NAME.test(status)) {
+          throw new Error('poll failed');
+        }
+        // The status is a safe enum name; it is written as text, never as markup (Req 9.2).
+        var badges = document.querySelectorAll('#investigation-status .badge, #in-progress .badge');
+        Array.prototype.forEach.call(badges, function (badge) {
+          badge.textContent = status;
+          badge.className = 'badge badge-status-' + status;
+        });
+        if (FINISHED.indexOf(status) >= 0) {
+          location.reload();
+        } else {
+          setTimeout(function () { pollIncident(id); }, REPORT_POLL_MS);
+        }
+      })
+      .catch(function () {
+        setTimeout(function () { pollIncident(id); }, REPORT_POLL_MS);
+      });
+  }
+
   function pad2(n) {
     return (n < 10 ? '0' : '') + n;
   }
@@ -104,6 +144,13 @@
     // Only the list page carries the data-live-list marker.
     if (document.querySelector('[data-live-list]')) {
       setTimeout(refreshList, LIST_REFRESH_MS);
+    }
+    // The server renders the data-live-report marker only while the status is not finished, so a
+    // finished page never polls (Req 4.5). The id comes from a data attribute, not from markup.
+    var liveReport = document.querySelector('[data-live-report][data-incident-id]');
+    if (liveReport && liveReport.dataset.incidentId) {
+      var incidentId = liveReport.dataset.incidentId;
+      setTimeout(function () { pollIncident(incidentId); }, REPORT_POLL_MS);
     }
     var newAlertForm = document.querySelector('form[data-new-alert]');
     if (newAlertForm) {

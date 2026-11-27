@@ -1,5 +1,12 @@
 <!DOCTYPE html>
-<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<html lang="en" xmlns:th="http://www.thymeleaf.org" th:with="metaRefresh=${!finished}">
+<!--/*
+  Report_Page (web UI Req 4 to 7). While the latest Investigation is not finished, the in-progress
+  indicator replaces the report sections, even when an earlier report version is stored; the head then
+  carries the 5-second meta refresh (no JS) and console.js polls GET /api/v1/incidents/{id} every
+  3 seconds (data-live-report). Untrusted text is printed with th:text only; hrefs carry only the
+  validated incident id, in-report evidence ids or dashboard links that pass the http(s) check (Req 9).
+*/-->
 <head th:replace="~{fragments/layout :: head(${incident.title})}"></head>
 <body>
 <header th:replace="~{fragments/layout :: header}"></header>
@@ -11,34 +18,72 @@
 <dl class="fields">
   <dt>Incident</dt><dd class="ev" th:text="${incident.id}">inc-000000000000</dd>
   <dt>Alert</dt><dd th:text="${incident.title}">HighErrorRate on checkout-api</dd>
+  <dt>Service</dt><dd th:text="${incident.service}">checkout-api</dd>
   <dt>Severity</dt><dd><span th:replace="~{fragments/badges :: severity(${incident.severity})}">Critical</span></dd>
   <dt>Detected</dt><dd th:text="${incident.detected}">2026-11-23 20:10 IST</dd>
-  <dt>Status</dt><dd><span th:replace="~{fragments/badges :: status(${incident.investigationStatus})}">COMPLETED</span></dd>
+  <dt>Status</dt><dd id="investigation-status"><span th:replace="~{fragments/badges :: status(${incident.investigationStatus})}">COMPLETED</span></dd>
+  <th:block th:unless="${#lists.isEmpty(dashboardLinks)}">
+  <dt>Dashboards</dt>
+  <dd>
+    <ul class="dashboard-links">
+      <li th:each="d : ${dashboardLinks}"><a th:if="${d.linkable}" th:href="${d.url}" rel="noopener noreferrer"
+          th:text="${d.url}">dashboard</a><span th:unless="${d.linkable}" class="ev" th:text="${d.url}">dashboard</span></li>
+    </ul>
+  </dd>
+  </th:block>
 </dl>
 
-<p th:if="${report == null}">
-  The report is not ready yet. Investigation status:
-  <span th:replace="~{fragments/badges :: status(${incident.investigationStatus})}">RUNNING</span>.
-</p>
+<section th:unless="${finished}" id="in-progress" class="in-progress" role="status" data-live-report th:data-incident-id="${incident.id}">
+  <p><span class="spinner" aria-hidden="true"></span>
+    Investigation in progress. Status:
+    <span th:replace="~{fragments/badges :: status(${incident.investigationStatus})}">RUNNING</span>.
+    This page shows the report when the investigation finishes.</p>
+  <p th:if="${reportReady}" class="muted">An earlier report is stored; the new report replaces it when this
+    investigation finishes.</p>
+</section>
 
-<th:block th:if="${report != null}">
+<th:block th:if="${finished and !reportReady}">
+  <section th:if="${incident.investigationStatus == 'FAILED'}" id="investigation-failed" class="failure" role="alert">
+    <p>The investigation failed and no report was produced.</p>
+  </section>
+  <p th:unless="${incident.investigationStatus == 'FAILED'}" class="muted">No report is stored for this incident.</p>
+</th:block>
+
+<th:block th:if="${finished and reportReady}">
+  <p th:if="${incident.investigationStatus == 'FAILED'}" class="notice" role="alert">The latest investigation
+    failed; this is the earlier report.</p>
+
+  <section id="summary">
   <h2>What happened</h2>
   <p th:text="${report.summary}">Summary</p>
+  </section>
 
+  <section id="hypotheses">
   <h2>Hypotheses</h2>
   <p th:if="${#lists.isEmpty(report.hypotheses)}">None.</p>
-  <ol th:unless="${#lists.isEmpty(report.hypotheses)}">
-    <li th:each="h : ${report.hypotheses}">
-      <span th:text="${h.statement}">Statement</span>
-      <span class="muted" th:text="'(confidence: ' + ${h.confidence} + ')'">(confidence: HIGH)</span>
-      <span class="ev" th:each="ev : ${h.supportingEvidenceIds}" th:text="'[' + ${ev} + ']'">[ev]</span>
-      <div th:unless="${#lists.isEmpty(h.contradictingEvidenceIds)}">Contradicting:
-        <span class="ev" th:each="ev : ${h.contradictingEvidenceIds}" th:text="'[' + ${ev} + ']'">[ev]</span>
+  <ol th:unless="${#lists.isEmpty(report.hypotheses)}" class="hypotheses">
+    <li th:each="h : ${report.hypotheses}" th:value="${h.number}" class="hypothesis">
+      <div>
+        <span class="statement" th:text="${h.statement}">Statement</span>
+        <span class="badge badge-confidence" th:classappend="${'badge-confidence-' + h.confidence}" th:text="'Confidence: ' + ${h.confidence}">Confidence: HIGH</span>
+        <span class="cause" th:classappend="${h.establishedCause} ? 'cause-established' : 'cause-correlated'" th:text="${h.establishedCause} ? 'established cause' : 'correlated, not established'">correlated, not established</span>
       </div>
       <div class="correlation" th:each="s : ${h.correlationStatements}" th:text="${s}">Correlated with ...</div>
+      <div class="evidence-ids supporting"><span class="label">Supporting evidence:</span>
+        <span th:if="${#lists.isEmpty(h.supportingEvidenceIds)}" class="muted">none</span>
+        <th:block th:unless="${#lists.isEmpty(h.supportingEvidenceIds)}"><span
+              th:replace="~{fragments/evidence :: cite(${h.supportingEvidenceIds})}">[ev]</span></th:block>
+      </div>
+      <div class="evidence-ids contradicting"><span class="label">Contradicting evidence:</span>
+        <span th:if="${#lists.isEmpty(h.contradictingEvidenceIds)}" class="muted">none</span>
+        <th:block th:unless="${#lists.isEmpty(h.contradictingEvidenceIds)}"><span
+              th:replace="~{fragments/evidence :: cite(${h.contradictingEvidenceIds})}">[ev]</span></th:block>
+      </div>
     </li>
   </ol>
+  </section>
 
+  <section id="timeline">
   <h2 th:text="${report.timelineHeading}">Timeline (IST)</h2>
   <p th:if="${#lists.isEmpty(report.timeline)}">None.</p>
   <table th:unless="${#lists.isEmpty(report.timeline)}">
@@ -47,33 +92,48 @@
       <td class="ev" th:text="${e.time}">20:10</td>
       <td>
         <span th:text="${e.description}">Description</span>
-        <span class="ev" th:each="ev : ${e.evidenceIds}" th:text="'[' + ${ev} + ']'">[ev]</span>
+        <span th:replace="~{fragments/evidence :: cite(${e.evidenceIds})}">[ev]</span>
       </td>
     </tr>
     </tbody>
   </table>
+  </section>
 
+  <section id="actions">
   <h2>Recommended next steps</h2>
-  <p th:if="${#lists.isEmpty(report.actions)}">None.</p>
-  <ol th:unless="${#lists.isEmpty(report.actions)}">
-    <li th:each="a : ${report.actions}" th:value="${a.order}">
-      <span th:text="${a.description}">Description</span>
-      <span class="ev" th:each="ev : ${a.evidenceIds}" th:text="'[' + ${ev} + ']'">[ev]</span>
-      <span th:classappend="${a.requiresApproval} ? 'approval'" th:text="${a.marker}">[investigate]</span>
+  <p th:if="${#lists.isEmpty(actionApprovals)}">None.</p>
+  <ol th:unless="${#lists.isEmpty(actionApprovals)}" class="actions">
+    <li th:each="aa : ${actionApprovals}" th:value="${aa.action.order}" class="action">
+      <span class="action-type" th:text="${aa.action.type}">INVESTIGATE</span>
+      <span th:text="${aa.action.description}">Description</span>
+      <span th:replace="~{fragments/evidence :: cite(${aa.action.evidenceIds})}">[ev]</span>
+      <span th:classappend="${aa.requiresApproval} ? 'approval'" th:text="${aa.action.marker}">[investigate]</span>
+      <div th:if="${aa.requiresApproval}" class="approval-state"><span class="label">Approval:</span>
+        <span th:replace="~{fragments/badges :: status(${aa.approvalState})}">PENDING</span>
+        <span th:if="${aa.decidedBy != null}" class="decision">decided by <span class="decided-by" th:text="${aa.decidedBy}">someone</span><th:block th:if="${aa.decidedTime != null}"> at <span class="decided-at" th:text="${aa.decidedTime}">2026-11-23 20:30 IST</span></th:block></span>
+        <span class="muted">(decisions are made in Slack)</span>
+      </div>
     </li>
   </ol>
+  </section>
 
+  <section id="open-questions">
   <h2>Open questions</h2>
   <p th:if="${#lists.isEmpty(report.openQuestions)}">None.</p>
   <ul th:unless="${#lists.isEmpty(report.openQuestions)}">
     <li th:each="q : ${report.openQuestions}" th:text="${q}">Question</li>
   </ul>
+  </section>
 
+  <section id="evidence">
   <h2>Evidence</h2>
   <p th:if="${#lists.isEmpty(report.evidence)}">None.</p>
   <table th:unless="${#lists.isEmpty(report.evidence)}">
+    <thead>
+    <tr><th>ID</th><th>Type</th><th>Source</th><th>Observed</th><th>Finding</th></tr>
+    </thead>
     <tbody>
-    <tr th:each="e : ${report.evidence}">
+    <tr th:each="e : ${report.evidence}" th:id="'ev-' + ${e.id}" class="evidence-entry">
       <td class="ev" th:text="${e.id}">ev</td>
       <td th:text="${e.type}">ALERT</td>
       <td th:text="${e.source}">alert-intake</td>
@@ -85,6 +145,7 @@
     </tr>
     </tbody>
   </table>
+  </section>
 
   <p class="muted" th:text="'Generated ' + ${report.generated}">Generated</p>
 </th:block>

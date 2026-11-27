@@ -6,10 +6,13 @@
     <header th:replace="~{fragments/layout :: header}"></header>
     <footer th:replace="~{fragments/layout :: footer}"></footer>
   CSS and JS come only from this application's static path; no external host.
+  A page that sets the local variable metaRefresh to true (th:with on its <html>) gets the 5-second
+  no-JS reload (web UI Req 4.4); other pages leave it unset and get none.
 */-->
 <head th:fragment="head(title)">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta th:if="${metaRefresh == true}" http-equiv="refresh" content="5">
   <title th:text="${title}">Investigator</title>
   <link rel="stylesheet" href="/css/console.css" th:href="@{/css/console.css}">
   <script src="/js/console.js" th:src="@{/js/console.js}" defer></script>

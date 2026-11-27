@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<!--/*
+  cite(ids): the Evidence_IDs cited by a hypothesis, timeline entry or action (web UI Req 5.4, 6.2, 6.4, 7.1).
+  An id that matches an Evidence_Entry of the report (the knownEvidenceIds model attribute) links to that
+  entry's anchor #ev-<id>; any other id is plain text. Hrefs carry only in-report evidence ids (Req 9.3).
+  Usage: <span th:replace="~{fragments/evidence :: cite(${h.supportingEvidenceIds})}"></span>
+  Each element stays on one line so the output has no stray whitespace between ids.
+*/-->
+<body>
+<span th:fragment="cite(ids)" class="cite"><th:block th:each="evId, it : ${ids}"><a th:if="${knownEvidenceIds.contains(evId)}" class="ev evidence-link" th:href="'#ev-' + ${evId}" th:text="'[' + ${evId} + ']'">[ev]</a><span th:unless="${knownEvidenceIds.contains(evId)}" class="ev evidence-unknown" th:text="'[' + ${evId} + ']'">[ev]</span><th:block th:unless="${it.last}"> </th:block></th:block></span>
+</body>
+</html>

@@ -22,6 +22,9 @@ import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.domain.RecommendedAction;
 import dev.investigator.domain.Severity;
 import dev.investigator.domain.TimelineEntry;
+import dev.investigator.report.Approval;
+import dev.investigator.report.ApprovalRepository;
+import dev.investigator.report.InMemoryApprovalRepository;
 import dev.investigator.report.ReportRenderer;
 import dev.investigator.store.InMemoryIncidentRepository;
 import dev.investigator.store.InMemoryInvestigationRepository;
@@ -59,9 +62,12 @@ import org.thymeleaf.spring6.view.ThymeleafViewResolver;
 class IncidentPageControllerTest {
 
     private static final Instant T0 = Instant.parse("2026-11-23T14:40:00Z");
+    private static final String DEPLOY_HEADLINE = "checkout-api v2.14.3 deployed";
 
     @Autowired
     private MockMvc mvc;
+    @Autowired
+    private ApprovalRepository approvals;
     @Autowired
     private IncidentRepository incidents;
     @Autowired
@@ -152,7 +158,7 @@ class IncidentPageControllerTest {
         // through the application's own Thymeleaf view resolver.
         MockMvc empty = MockMvcBuilders.standaloneSetup(new IncidentPageController(new InMemoryIncidentRepository(),
                 new InMemoryInvestigationRepository(), new InMemoryReportRepository(), renderer, intake, webhook,
-                validator, clock))
+                validator, clock, new InMemoryApprovalRepository()))
                 // Delegate so the standalone builder does not re-bind the shared resolver to its stub context.
                 .setViewResolvers((ViewResolver) viewResolver::resolveViewName)
                 .build();
@@ -305,6 +311,198 @@ class IncidentPageControllerTest {
                 .doesNotContain("KeepMe<Alert>");
         assertSelectedPreset(page, "bad-deploy");
         assertThat(incidents.findAllNewestFirst()).hasSize(before);
+    }
+
+    @Test
+    void pendingIncidentShowsInProgressIndicatorAndMetaRefreshWithoutReportSections() throws Exception {
+        String id = storedIncident(Severity.CRITICAL);
+        investigations.create(pending(id));
+
+        String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+        assertInProgress(page, id, "PENDING");
+        assertThat(page).doesNotContain("An earlier report is stored");
+    }
+
+    @Test
+    void runningReinvestigationWithEarlierReportShowsInProgressAndHidesTheReport() throws Exception {
+        String id = storedIncident(Severity.HIGH);
+        investigations.create(pending(id));
+        investigations.transition(id, InvestigationStatus.PENDING, InvestigationStatus.RUNNING);
+        investigations.transition(id, InvestigationStatus.RUNNING, InvestigationStatus.COMPLETED);
+        reports.saveIfAbsent(fullReport(id, List.of()));
+        assertThat(investigations.restart(pending(id))).isTrue();
+        assertThat(investigations.transition(id, InvestigationStatus.PENDING, InvestigationStatus.RUNNING)).isTrue();
+
+        String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+        assertInProgress(page, id, "RUNNING");
+        assertThat(page)
+                .contains("An earlier report is stored")
+                .doesNotContain("checkout errors rose", "payment-provider is slow", "check the provider",
+                        "badge-status-COMPLETED");
+    }
+
+    @Test
+    void completedReportShowsHypothesesCauseLabelsEvidenceLinksAndPendingApproval() throws Exception {
+        String id = completedIncidentWithReport(List.of());
+        String alertEv = "ev-" + id + "-1";
+        String deployEv = "ev-" + id + "-2";
+
+        String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+        assertFinished(page);
+        assertThat(page)
+                .contains("<span class=\"badge badge-confidence badge-confidence-HIGH\">Confidence: HIGH</span>")
+                .contains("<span class=\"badge badge-confidence badge-confidence-LOW\">Confidence: LOW</span>")
+                .contains("<span class=\"cause cause-established\">established cause</span>")
+                .contains("<span class=\"cause cause-correlated\">correlated, not established</span>")
+                .contains(ReportRenderer.correlationStatement(DEPLOY_HEADLINE))
+                .contains("Supporting evidence:", "Contradicting evidence:")
+                .contains("<tr id=\"ev-" + alertEv + "\" class=\"evidence-entry\">")
+                .contains("<tr id=\"ev-" + deployEv + "\" class=\"evidence-entry\">")
+                .contains("href=\"#ev-" + alertEv + "\">[" + alertEv + "]</a>")
+                .contains("href=\"#ev-" + deployEv + "\">[" + deployEv + "]</a>")
+                .contains("[rollback, requires approval]")
+                .doesNotContain("evidence-unknown");
+        // The established hypothesis comes first, the correlated one second.
+        assertThat(page.indexOf("cause-established")).isLessThan(page.indexOf("cause-correlated"));
+
+        String actions = section(page, "actions");
+        assertThat(actions)
+                .contains("<span class=\"label\">Approval:</span>")
+                .contains("<span class=\"badge badge-status-PENDING\">PENDING</span>")
+                .doesNotContain("decided by", "badge-status-APPROVED", "badge-status-REJECTED");
+        assertThat(actions.split("class=\"approval-state\"", -1)).as("one approvable action").hasSize(2);
+    }
+
+    @Test
+    void unknownCitedEvidenceIdRendersAsPlainTextWithoutLink() throws Exception {
+        String id = storedIncident(Severity.CRITICAL);
+        finishedInvestigation(id, InvestigationStatus.COMPLETED);
+        String unknown = "ev-" + id + "-99";
+        reports.saveIfAbsent(fullReport(id, List.of(unknown)));
+
+        String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+        assertThat(page)
+                .contains("<span class=\"ev evidence-unknown\">[" + unknown + "]</span>")
+                .doesNotContain("href=\"#ev-" + unknown + "\"", "id=\"ev-" + unknown + "\"");
+    }
+
+    @Test
+    void decidedApprovalShowsStateDeciderAndTime() throws Exception {
+        Instant decidedAt = T0.plusSeconds(300);
+        String id = completedIncidentWithReport(List.of());
+        // "#20 " must not match action #2; the newest "#2 " approval wins over the older pending one.
+        approvals.save(Approval.pending(randomApprovalId(), id, "#20 ROLLBACK: another action", T0.plusSeconds(200)));
+        approvals.save(Approval.pending(randomApprovalId(), id, "#2 ROLLBACK: roll back v2.14.3", T0.plusSeconds(60)));
+        String newest = randomApprovalId();
+        approvals.save(Approval.pending(newest, id, "#2 ROLLBACK: roll back v2.14.3", T0.plusSeconds(120)));
+        assertThat(approvals.decide(newest, Approval.Status.APPROVED, "alice", decidedAt)).isTrue();
+
+        String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+        String actions = section(page, "actions");
+        assertThat(actions)
+                .contains("<span class=\"badge badge-status-APPROVED\">APPROVED</span>")
+                .contains("decided by <span class=\"decided-by\">alice</span>")
+                .contains(" at <span class=\"decided-at\">" + renderer.times().dateTime(decidedAt) + "</span>")
+                .doesNotContain("badge-status-PENDING");
+    }
+
+    @Test
+    void finishedPagesHaveNoMetaRefreshAndStartNoPoll() throws Exception {
+        for (InvestigationStatus status : List.of(InvestigationStatus.COMPLETED, InvestigationStatus.INCONCLUSIVE,
+                InvestigationStatus.FAILED)) {
+            String id = storedIncident(Severity.WARNING);
+            finishedInvestigation(id, status);
+
+            String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+            assertFinished(page);
+            assertThat(page).as(status.name())
+                    .contains("class=\"badge badge-status-" + status.name() + "\">" + status.name() + "</span>");
+        }
+    }
+
+    @Test
+    void failedInvestigationWithoutReportShowsFailureMessage() throws Exception {
+        String id = storedIncident(Severity.CRITICAL);
+        finishedInvestigation(id, InvestigationStatus.FAILED);
+
+        String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+        assertFinished(page);
+        assertThat(page)
+                .contains("id=\"investigation-failed\"", "The investigation failed and no report was produced.")
+                .doesNotContain("id=\"summary\"", "id=\"hypotheses\"", "id=\"evidence\"");
+    }
+
+    private static void assertInProgress(String page, String id, String status) {
+        assertThat(page)
+                .contains("<meta http-equiv=\"refresh\" content=\"5\">")
+                .contains("id=\"in-progress\"", "Investigation in progress.")
+                .contains("data-live-report", "data-incident-id=\"" + id + "\"")
+                .contains("class=\"badge badge-status-" + status + "\">" + status + "</span>")
+                .doesNotContain("id=\"summary\"", "id=\"hypotheses\"", "id=\"timeline\"", "id=\"actions\"",
+                        "id=\"open-questions\"", "id=\"evidence\"", "id=\"ev-", "What happened",
+                        "Recommended next steps", "id=\"investigation-failed\"");
+    }
+
+    private static void assertFinished(String page) {
+        assertThat(page)
+                .doesNotContain("http-equiv=\"refresh\"", "data-live-report", "data-incident-id", "id=\"in-progress\"");
+    }
+
+    /** The markup of {@code <section id="name">} up to its closing tag. */
+    private static String section(String page, String name) {
+        int start = page.indexOf("<section id=\"" + name + "\">");
+        assertThat(start).as("section %s", name).isNotNegative();
+        return page.substring(start, page.indexOf("</section>", start));
+    }
+
+    private void finishedInvestigation(String id, InvestigationStatus status) {
+        investigations.create(pending(id));
+        assertThat(investigations.transition(id, InvestigationStatus.PENDING, InvestigationStatus.RUNNING)).isTrue();
+        assertThat(investigations.transition(id, InvestigationStatus.RUNNING, status)).isTrue();
+    }
+
+    private String completedIncidentWithReport(List<String> extraCitations) {
+        String id = storedIncident(Severity.CRITICAL);
+        finishedInvestigation(id, InvestigationStatus.COMPLETED);
+        reports.saveIfAbsent(fullReport(id, extraCitations));
+        return id;
+    }
+
+    /**
+     * A report with an alert and a deploy Evidence_Entry, an established and a correlated hypothesis, and an
+     * investigate action plus an approvable rollback (#2); {@code extraCitations} are added to the timeline.
+     */
+    private static InvestigationReport fullReport(String id, List<String> extraCitations) {
+        String alertEv = "ev-" + id + "-1";
+        String deployEv = "ev-" + id + "-2";
+        List<String> timelineIds = new ArrayList<>(List.of(alertEv));
+        timelineIds.addAll(extraCitations);
+        return new InvestigationReport(id, InvestigationStatus.COMPLETED, "checkout errors rose",
+                new IncidentTimeline(List.of(new TimelineEntry(T0, "alert fires", timelineIds))),
+                List.of(new Hypothesis("payment-provider is slow", Confidence.HIGH, List.of(alertEv), List.of(), true),
+                        new Hypothesis("the deploy caused it", Confidence.LOW, List.of(deployEv), List.of(alertEv),
+                                false)),
+                List.of(new RecommendedAction(1, ActionType.INVESTIGATE, "check the provider", false,
+                                List.of(alertEv)),
+                        new RecommendedAction(2, ActionType.ROLLBACK, "roll back v2.14.3", true, List.of(deployEv))),
+                List.of(), List.of(new EvidenceRef(alertEv, EvidenceType.ALERT, "alert-intake", T0,
+                                "HighErrorRate fired", "alert payload"),
+                        new EvidenceRef(deployEv, EvidenceType.DEPLOYMENT, "github", T0.minusSeconds(840),
+                                DEPLOY_HEADLINE, "deployment 1000001")),
+                T0.plusSeconds(60));
+    }
+
+    private static String randomApprovalId() {
+        byte[] bytes = new byte[6];
+        ThreadLocalRandom.current().nextBytes(bytes);
+        return "apr-" + HexFormat.of().formatHex(bytes);
     }
 
     @Test

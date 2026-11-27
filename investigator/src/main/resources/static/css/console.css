@@ -129,6 +129,15 @@ li { margin: 0.25rem 0; }
 .badge-status-INCONCLUSIVE { background: var(--amber); color: #111; }
 .badge-status-FAILED       { background: var(--red); }
 
+/* Approval_State badges reuse the status badge (Req 7.2); PENDING is grey above. */
+.badge-status-APPROVED     { background: var(--green); }
+.badge-status-REJECTED     { background: var(--red); }
+
+/* Hypothesis confidence (Req 5.1). */
+.badge-confidence-HIGH   { background: var(--green); }
+.badge-confidence-MEDIUM { background: var(--amber); color: #111; }
+.badge-confidence-LOW    { background: var(--grey); }
+
 .badge-severity-Critical { background: var(--red); }
 .badge-severity-High     { background: var(--orange); }
 .badge-severity-Warning  { background: var(--amber); color: #111; }
@@ -141,6 +150,43 @@ tr:target,
   outline-offset: -2px;
   background: var(--target-bg);
 }
+
+/* Report page */
+.in-progress, .failure {
+  padding: 0.75rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--blue);
+}
+.in-progress p, .failure p { margin: 0.25rem 0; }
+.failure { border-left-color: var(--red); }
+.spinner {
+  display: inline-block;
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-right: 0.4rem;
+  vertical-align: -0.1rem;
+  border: 2px solid var(--border);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.label { color: var(--muted); font-size: 12px; }
+.cause {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 11px;
+}
+.cause-established { color: var(--green); border-color: var(--green); }
+.cause-correlated { color: var(--amber); border-color: var(--amber); }
+.evidence-ids { margin-top: 0.15rem; }
+.evidence-unknown { font-style: italic; }
+.action-type { font-weight: 600; font-size: 12px; color: var(--muted); }
+.approval-state { margin-top: 0.15rem; }
+.dashboard-links { margin: 0; padding-left: 1rem; }
 
 /* New alert form */
 .preset-links { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1rem; }

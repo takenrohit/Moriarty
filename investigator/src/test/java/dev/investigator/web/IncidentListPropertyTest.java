@@ -10,6 +10,7 @@ import dev.investigator.config.WebhookProperties;
 import dev.investigator.domain.Incident;
 import dev.investigator.domain.IncidentStatus;
 import dev.investigator.domain.Severity;
+import dev.investigator.report.InMemoryApprovalRepository;
 import dev.investigator.report.ReportRenderer;
 import dev.investigator.store.InMemoryIncidentRepository;
 import dev.investigator.store.InMemoryInvestigationRepository;
@@ -80,7 +81,7 @@ class IncidentListPropertyTest {
 
             MockMvc mvc = MockMvcBuilders.standaloneSetup(new IncidentPageController(store,
                     new InMemoryInvestigationRepository(), new InMemoryReportRepository(), renderer, intake, webhook,
-                    validator, clock))
+                    validator, clock, new InMemoryApprovalRepository()))
                     // Delegate so the standalone builder does not re-bind the shared resolver to its stub context.
                     .setViewResolvers((ViewResolver) viewResolver::resolveViewName)
                     .build();
