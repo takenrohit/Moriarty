@@ -28,10 +28,13 @@ import dev.investigator.testsupport.PropertySeeds;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.SplittableRandom;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +55,12 @@ import org.springframework.test.web.servlet.MockMvc;
  * {@code correlated, not established} otherwise, never both.
  * <b>Validates: Requirements 5.1, 5.2</b>
  *
+ * <p>Property 7: for any report whose timeline, hypotheses and actions cite a mix of Evidence_IDs that match
+ * an Evidence_Entry and well-formed ids that match none, every entry has exactly one anchor
+ * {@code ev-<evidenceId>}, every known citation links to {@code #ev-<evidenceId>}, and every unknown
+ * citation is plain text that no {@code href} contains.
+ * <b>Validates: Requirements 6.1, 6.2, 6.4, 7.1</b>
+ *
  * <p>All seeds share the Spring context of the other {@code @InvestigatorSpringBootTest} MockMvc tests and
  * store their data under fresh random incident ids, so seeds and property methods never collide. Data is
  * written straight to the stores (no investigation is started), so no Scripted_Chat_Model calls happen.
@@ -71,6 +80,8 @@ class ReportPagePropertyTest {
     /** Cause-status labels of a hypothesis (Req 5.2). */
     private static final String ESTABLISHED = "established cause";
     private static final String CORRELATED = "correlated, not established";
+    /** Every {@code href} attribute value on a page. */
+    private static final Pattern HREF = Pattern.compile("href=\"([^\"]*)\"");
 
     @Autowired
     private MockMvc mvc;
@@ -150,6 +161,109 @@ class ReportPagePropertyTest {
                         .isZero();
             }
         });
+    }
+
+    // Feature: investigator-web-ui, Property 7: Evidence ids link exactly when a matching entry exists
+    @ParameterizedTest(name = "seed={0}")
+    @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
+    void evidenceIdsLinkExactlyWhenAMatchingEntryExists(long seed) {
+        PropertySeeds.check(seed, random -> {
+            String id = storedIncident(random);
+            int count = 1 + random.nextInt(5);
+            List<String> known = new ArrayList<>();
+            for (int i = 1; i <= count; i++) {
+                known.add("ev-" + id + "-" + i);
+            }
+            // Well-formed ids of the same incident numbered above every entry, so no known id contains one.
+            List<String> unknown = new ArrayList<>();
+            int n = count + 1 + random.nextInt(5);
+            for (int k = 1 + random.nextInt(3); k > 0; k--) {
+                unknown.add("ev-" + id + "-" + n);
+                n += 1 + random.nextInt(7);
+            }
+            List<String> cited = new ArrayList<>();
+            InvestigationReport report = citingReport(id, random, known, unknown, cited);
+            reports.saveIfAbsent(report);
+            investigation(id, InvestigationStatus.COMPLETED);
+
+            String page = page(id);
+            for (String ev : known) {
+                assertThat(occurrences(page, "id=\"ev-" + ev + "\"")).as("anchor of %s", ev).isEqualTo(1);
+                assertThat(occurrences(page, "<a class=\"ev evidence-link\" href=\"#ev-" + ev + "\">[" + ev + "]</a>"))
+                        .as("links to %s", ev).isEqualTo(Collections.frequency(cited, ev));
+                assertThat(page).as("known %s never plain", ev)
+                        .doesNotContain("<span class=\"ev evidence-unknown\">[" + ev + "]</span>");
+            }
+            List<String> hrefs = new ArrayList<>();
+            Matcher m = HREF.matcher(page);
+            while (m.find()) {
+                hrefs.add(m.group(1));
+            }
+            for (String ev : unknown) {
+                assertThat(occurrences(page, "<span class=\"ev evidence-unknown\">[" + ev + "]</span>"))
+                        .as("plain text of %s", ev).isEqualTo(Collections.frequency(cited, ev));
+                assertThat(page).as("no anchor for %s", ev).doesNotContain("id=\"ev-" + ev + "\"");
+                assertThat(hrefs).as("no href with %s", ev).noneMatch(h -> h.contains(ev));
+            }
+            long knownCites = cited.stream().filter(known::contains).count();
+            assertThat(occurrences(page, "class=\"ev evidence-link\"")).as("all links").isEqualTo((int) knownCites);
+            assertThat(occurrences(page, "class=\"ev evidence-unknown\"")).as("all plain ids")
+                    .isEqualTo(cited.size() - (int) knownCites);
+        });
+    }
+
+    /**
+     * A {@code COMPLETED} report with one Evidence_Entry per {@code known} id whose timeline entries,
+     * hypotheses (supporting and contradicting) and actions cite a random mix of {@code known} and
+     * {@code unknown} ids; every citation is appended to {@code cited}. The first timeline entry cites one id
+     * of each kind. Stored directly, so the ReportValidator (which rejects unknown ids) is not involved.
+     */
+    private static InvestigationReport citingReport(String id, SplittableRandom random, List<String> known,
+            List<String> unknown, List<String> cited) {
+        List<EvidenceRef> evidence = new ArrayList<>();
+        for (int i = 0; i < known.size(); i++) {
+            evidence.add(new EvidenceRef(known.get(i), EvidenceType.ALERT, "alert-intake", T0.plusSeconds(i + 1),
+                    "finding " + (i + 1), "citation " + (i + 1)));
+        }
+        List<TimelineEntry> timeline = new ArrayList<>();
+        int entries = 1 + random.nextInt(3);
+        for (int i = 0; i < entries; i++) {
+            List<String> ids = new ArrayList<>();
+            if (i == 0) {
+                ids.add(pick(random, known.toArray(String[]::new)));
+                ids.add(pick(random, unknown.toArray(String[]::new)));
+            }
+            ids.addAll(cites(random, known, unknown, i == 0 ? 0 : 1));
+            cited.addAll(ids);
+            timeline.add(new TimelineEntry(T0.plusSeconds(i), "event " + i, ids));
+        }
+        List<Hypothesis> hypotheses = new ArrayList<>();
+        for (int i = 1, n = 1 + random.nextInt(3); i <= n; i++) {
+            List<String> supporting = cites(random, known, unknown, 0);
+            List<String> contradicting = cites(random, known, unknown, 0);
+            cited.addAll(supporting);
+            cited.addAll(contradicting);
+            hypotheses.add(new Hypothesis("hypothesis " + i, pick(random, Confidence.values()), supporting,
+                    contradicting, random.nextBoolean()));
+        }
+        List<RecommendedAction> actions = new ArrayList<>();
+        for (int i = 1, n = 1 + random.nextInt(3); i <= n; i++) {
+            List<String> ids = cites(random, known, unknown, 1);
+            cited.addAll(ids);
+            actions.add(new RecommendedAction(i, ActionType.INVESTIGATE, "check " + i, false, ids));
+        }
+        return new InvestigationReport(id, InvestigationStatus.COMPLETED, "summary of " + id,
+                new IncidentTimeline(timeline), hypotheses, actions, List.of(), evidence, T0.plusSeconds(60));
+    }
+
+    /** {@code min} to {@code min + 3} ids, each drawn from {@code known} or {@code unknown} at random. */
+    private static List<String> cites(SplittableRandom random, List<String> known, List<String> unknown, int min) {
+        List<String> ids = new ArrayList<>();
+        for (int k = min + random.nextInt(4); k > 0; k--) {
+            List<String> from = random.nextBoolean() ? known : unknown;
+            ids.add(from.get(random.nextInt(from.size())));
+        }
+        return ids;
     }
 
     // ---- shared helpers for the Report_Page properties ----
