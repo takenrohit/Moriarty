@@ -20,8 +20,10 @@ processors:
 exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
-    resource_to_telemetry_conversion:
-      enabled: true
+    # resource_to_telemetry_conversion is rejected since 0.16x (feature gate
+    # exporter.prometheus.DisableResourceToTelemetryConversion); this is its replacement.
+    resource_constant_labels:
+      included: ["*"]
   otlp_http/loki:
     endpoint: http://loki:3100/otlp
   otlp_grpc/tempo:
