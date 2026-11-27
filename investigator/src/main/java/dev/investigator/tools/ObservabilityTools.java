@@ -149,8 +149,8 @@ public class ObservabilityTools {
 
     @Tool("Search logs for one service with LogQL line filters. Returns counts and the top distinct messages."
             + " The service selector is added from the service argument, so pass only line filters, e.g."
-            + " |= \"timeout\" or |~ \"(?i)exception|error\". Lucene syntax such as level:error is not LogQL"
-            + " and fails.")
+            + " |~ \"(?i)timeout|exception\". Filters are case-sensitive; start a |~ regex with (?i) to ignore"
+            + " case. Lucene syntax such as level:error is not LogQL and fails.")
     public String searchLogs(@ToolMemoryId String incidentId, @P("service") String service,
             @P("LogQL line filters, e.g. |= \"timeout\"") String query, @P("start") String start,
             @P("end") String end) {
