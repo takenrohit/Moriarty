@@ -83,6 +83,11 @@ import org.springframework.web.util.HtmlUtils;
  * time in the Display_Timezone, or {@code No feedback yet.} when there are none.
  * <b>Validates: Requirements 8.3</b>
  *
+ * <p>Property 12: for any Incident with a Finished_Status, the page has exactly one link whose target is
+ * {@code /api/v1/incidents/{id}/report.md} built from that Incident's id when a report is stored, and that
+ * URL serves 200 {@code text/markdown}; without a stored report there is no download link.
+ * <b>Validates: Requirements 8.6</b>
+ *
  * <p>All seeds share the Spring context of the other {@code @InvestigatorSpringBootTest} MockMvc tests and
  * store their data under fresh random incident ids, so seeds and property methods never collide. Data is
  * written straight to the stores (no investigation is started), so no Scripted_Chat_Model calls happen.
@@ -402,6 +407,47 @@ class ReportPagePropertyTest {
                     assertThat(note.find()).as("entry %d one note", shown + 1).isFalse();
                 }
             }
+        });
+    }
+
+    // Feature: investigator-web-ui, Property 12: The Markdown download link targets the report endpoint
+    @ParameterizedTest(name = "seed={0}")
+    @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
+    void markdownDownloadLinkTargetsTheReportEndpoint(long seed) {
+        PropertySeeds.check(seed, random -> {
+            InvestigationStatus target = pick(random, FINISHED.toArray(InvestigationStatus[]::new));
+            boolean withReport = random.nextBoolean();
+            String id = storedIncident(random);
+            if (withReport) {
+                reports.saveIfAbsent(report(id, random));
+            }
+            investigation(id, target);
+
+            String page = page(id);
+            List<String> downloads = new ArrayList<>();
+            Matcher m = HREF.matcher(page);
+            while (m.find()) {
+                String href = HtmlUtils.htmlUnescape(m.group(1));
+                if (href.contains("report.md")) {
+                    downloads.add(href);
+                }
+            }
+            assertThat(page).as("re-investigate form once %s", target).contains("id=\"reinvestigate-form\"");
+            if (!withReport) {
+                assertThat(downloads).as("no download link without a report (%s)", target).isEmpty();
+                assertThat(page).as("no download anchor without a report").doesNotContain("id=\"report-download\"");
+                return;
+            }
+            String expected = "/api/v1/incidents/" + id + "/report.md";
+            assertThat(downloads).as("exactly one download link to %s (%s)", expected, target)
+                    .containsExactly(expected);
+            assertThat(occurrences(page, "id=\"report-download\"")).as("one download anchor").isEqualTo(1);
+
+            String markdown = mvc.perform(get(downloads.get(0)))
+                    .andExpect(status().isOk())
+                    .andExpect(content().contentTypeCompatibleWith("text/markdown"))
+                    .andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+            assertThat(markdown).as("markdown of %s", id).isNotBlank();
         });
     }
 
