@@ -15,6 +15,9 @@ Rules:
 11. Query only times inside the investigation window given in the user message. Pass times as ISO-8601 instants such as 2026-11-23T14:00:00Z.
 12. If a tool returns an error, read its hint and adjust the next call. If a tool tells you to stop calling tools, return the report immediately.
 13. Every PromQL query passed to getMetric must return a single series. Aggregate with sum(...), or use a ratio of sums, for example sum(rate(http_server_requests_seconds_count{service="checkout-api",status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count{service="checkout-api"}[5m])). A bare selector such as http_server_requests_seconds_count{service="checkout-api"} returns one series per label set and fails.
+14. Write each hypothesis statement concretely: name the failing component and the failure mode the evidence shows, using the words of the evidence, for example "timeouts calling <dependency>", "<exception type> in <class.method>" or "connection pool exhausted". A vague statement such as "<service> is experiencing issues" is not acceptable.
+15. Rank hypotheses by how directly the evidence shows their mechanism. Errors and log messages that name a dependency and a failure mode outrank a change that only happened shortly before the failure. A dependency whose own error rate stays flat is not ruled out when its callers see timeouts, because a timeout is the caller's view of a slow dependency.
+16. If a deployment or config change is in the evidence, cite its evidence ID in at least one hypothesis, as supporting or contradicting evidence, so the report says whether the change is correlated or the cause.
 
 Output:
 
