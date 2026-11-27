@@ -42,7 +42,7 @@ class TempoClientIT {
     private static final Instant START = Instant.parse("2026-11-23T14:30:00Z");
     private static final Instant END = Instant.parse("2026-11-23T14:40:00Z");
     private static final String SENT_QUERY = "{ resource.service.name = \"checkout-api\" && (status = error"
-            + " || duration >= 2000ms) } | select(span.peer.service, span.server.address, status)";
+            + " || duration >= 2000ms) } | select(span.peer.service, span.server.address, status, name, kind)";
 
     /**
      * Shaped like Tempo 2.x search output: newest trace first, matched spans per span set with the selected
@@ -61,6 +61,8 @@ class TempoClientIT {
                  {"spanID":"0f1e2d3c4b5a6978","name":"POST /checkout","startTimeUnixNano":"1795444140500000000",
                   "durationNanos":"5012000000","attributes":[
                     {"key":"service.name","value":{"stringValue":"checkout-api"}},
+                    {"key":"server.address","value":{"stringValue":"127.0.0.1"}},
+                    {"key":"kind","value":{"stringValue":"server"}},
                     {"key":"status","value":{"stringValue":"error"}}]}],
                  "matched":2}]},
               {"traceID":"1c8e5b2a9d4f7036","rootServiceName":"checkout-api","rootTraceName":"POST /checkout",

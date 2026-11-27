@@ -33,9 +33,10 @@ import org.springframework.web.client.RestClientException;
  * otherwise the mock fallback in {@code IntegrationConfig} is used (Req 7.1, 7.2).
  *
  * <p>The query selects spans of the service that have error status or last at least the slow threshold, and
- * asks Tempo to return their service, peer and status attributes:
+ * asks Tempo to return their service, peer, status, name and kind attributes (Tempo 3.x search returns no
+ * span name unless {@code name} is selected):
  * {@code { resource.service.name = "<svc>" && (status = error || duration >= <slow>) }
- * | select(span.peer.service, span.server.address, status)}. Only the search response is used (no
+ * | select(span.peer.service, span.server.address, status, name, kind)}. Only the search response is used (no
  * {@code /api/traces/{id}} fetch): each trace's spans are its matched spans, at most {@value #SPANS_PER_SPANSET}
  * per span set (CP-63).
  *
@@ -107,7 +108,8 @@ public class TempoTraceClient implements TraceClient {
     public static String traceql(String service, Duration slowThreshold) {
         String quoted = "\"" + service.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
         return "{ resource.service.name = " + quoted + " && (status = error || duration >= "
-                + durationLiteral(slowThreshold) + ") } | select(span.peer.service, span.server.address, status)";
+                + durationLiteral(slowThreshold) + ") } | select(span.peer.service, span.server.address, status,"
+                + " name, kind)";
     }
 
     private static String durationLiteral(Duration d) {
@@ -208,7 +210,9 @@ public class TempoTraceClient implements TraceClient {
         if (operation.isBlank()) {
             operation = attributes.getOrDefault("name", UNKNOWN_OPERATION);
         }
-        String peer = attributes.getOrDefault("peer.service", attributes.get("server.address"));
+        // A server span's server.address is its own address, not a called service.
+        String peer = "server".equalsIgnoreCase(attributes.get("kind")) ? null
+                : attributes.getOrDefault("peer.service", attributes.get("server.address"));
         JsonNode durationNanos = span.path("durationNanos");
         long nanos;
         try {
