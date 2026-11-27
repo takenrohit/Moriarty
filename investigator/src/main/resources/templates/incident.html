@@ -15,6 +15,12 @@
 
 <h1 th:text="'Incident Investigation — ' + ${incident.service}">Incident Investigation</h1>
 
+<!--/* Outcome of a feedback or re-investigate POST, carried here as a flash attribute (Req 8.2, 8.5). */-->
+<p th:if="${flashNotice != null}" id="flash-notice" class="form-message flash-notice" role="status"
+   th:text="${flashNotice}">Thank you, your feedback is recorded.</p>
+<p th:if="${flashError != null}" id="flash-error" class="form-message" role="alert"
+   th:text="${flashError}">An investigation is already running for this incident.</p>
+
 <dl class="fields">
   <dt>Incident</dt><dd class="ev" th:text="${incident.id}">inc-000000000000</dd>
   <dt>Alert</dt><dd th:text="${incident.title}">HighErrorRate on checkout-api</dd>
@@ -32,6 +38,16 @@
   </dd>
   </th:block>
 </dl>
+
+<!--/* Reinvestigate_Control whenever the investigation is finished, also FAILED without a report (Req 4.6,
+       8.4); the Markdown download only with a stored report (Req 8.6). Both URLs carry only the validated id. */-->
+<section th:if="${finished}" id="report-controls" class="report-controls">
+  <form id="reinvestigate-form" method="post" th:action="@{/incidents/{id}/reinvestigate(id=${incident.id})}">
+    <button type="submit">Re-investigate</button>
+  </form>
+  <a th:if="${reportReady}" id="report-download" th:href="@{/api/v1/incidents/{id}/report.md(id=${incident.id})}"
+     download>Download Markdown report</a>
+</section>
 
 <section th:unless="${finished}" id="in-progress" class="in-progress" role="status" data-live-report th:data-incident-id="${incident.id}">
   <p><span class="spinner" aria-hidden="true"></span>
@@ -148,6 +164,32 @@
   </section>
 
   <p class="muted" th:text="'Generated ' + ${report.generated}">Generated</p>
+
+  <section id="feedback">
+  <h2>Feedback</h2>
+  <form id="feedback-form" class="alert-form feedback-form" method="post"
+        th:action="@{/incidents/{id}/feedback(id=${incident.id})}">
+    <fieldset class="rating-choices">
+      <legend class="label">Was this report helpful?</legend>
+      <label><input type="radio" name="rating" value="helpful" required> helpful</label>
+      <label><input type="radio" name="rating" value="unhelpful"> unhelpful</label>
+    </fieldset>
+    <div class="field">
+      <label for="feedback-note">Note (optional, at most 2000 characters)</label>
+      <textarea id="feedback-note" name="note" maxlength="2000" rows="3"></textarea>
+    </div>
+    <button type="submit">Send feedback</button>
+  </form>
+  <h3>Recorded feedback</h3>
+  <p th:if="${#lists.isEmpty(feedback)}" class="muted">No feedback yet.</p>
+  <ul th:unless="${#lists.isEmpty(feedback)}" class="feedback-list">
+    <li th:each="f : ${feedback}" class="feedback-entry">
+      <span class="feedback-rating" th:classappend="${'feedback-' + f.rating}" th:text="${f.rating}">helpful</span>
+      <span class="ev feedback-time" th:text="${f.time}">2026-11-23 20:30 IST</span>
+      <span th:if="${f.note != null}" class="feedback-note" th:text="${f.note}">Note</span>
+    </li>
+  </ul>
+  </section>
 </th:block>
 </main>
 <footer th:replace="~{fragments/layout :: footer}"></footer>

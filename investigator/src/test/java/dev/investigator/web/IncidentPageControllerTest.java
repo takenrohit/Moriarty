@@ -3,7 +3,10 @@ package dev.investigator.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.mockito.Mockito.doReturn;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import dev.investigator.alert.AlertIntakeService;
@@ -22,6 +25,10 @@ import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.domain.RecommendedAction;
 import dev.investigator.domain.Severity;
 import dev.investigator.domain.TimelineEntry;
+import dev.investigator.feedback.Feedback;
+import dev.investigator.feedback.FeedbackService;
+import dev.investigator.investigation.InvestigationOrchestrator;
+import dev.investigator.ratelimit.RateLimiter;
 import dev.investigator.report.Approval;
 import dev.investigator.report.ApprovalRepository;
 import dev.investigator.report.InMemoryApprovalRepository;
@@ -43,7 +50,9 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
@@ -51,7 +60,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.servlet.ViewResolver;
 import org.thymeleaf.spring6.view.ThymeleafViewResolver;
@@ -88,6 +99,13 @@ class IncidentPageControllerTest {
     private Clock clock;
     @Autowired
     private ScriptedChatModel chatModel;
+    @Autowired
+    private FeedbackService feedbackService;
+    @Autowired
+    private InvestigationOrchestrator orchestrator;
+    /** Real limiter; one test empties the investigation bucket of its own unique service. */
+    @MockitoSpyBean
+    private RateLimiter rateLimiter;
 
     /** Incidents whose investigation a form submission in this test started. */
     private final List<String> started = new ArrayList<>();
@@ -158,7 +176,7 @@ class IncidentPageControllerTest {
         // through the application's own Thymeleaf view resolver.
         MockMvc empty = MockMvcBuilders.standaloneSetup(new IncidentPageController(new InMemoryIncidentRepository(),
                 new InMemoryInvestigationRepository(), new InMemoryReportRepository(), renderer, intake, webhook,
-                validator, clock, new InMemoryApprovalRepository()))
+                validator, clock, new InMemoryApprovalRepository(), feedbackService, orchestrator))
                 // Delegate so the standalone builder does not re-bind the shared resolver to its stub context.
                 .setViewResolvers((ViewResolver) viewResolver::resolveViewName)
                 .build();
@@ -437,6 +455,184 @@ class IncidentPageControllerTest {
         assertThat(page)
                 .contains("id=\"investigation-failed\"", "The investigation failed and no report was produced.")
                 .doesNotContain("id=\"summary\"", "id=\"hypotheses\"", "id=\"evidence\"");
+        // The Reinvestigate_Control is offered without a report; feedback and download are not (Req 4.6, 8.1).
+        assertThat(page)
+                .contains("<form id=\"reinvestigate-form\" method=\"post\" action=\"/incidents/" + id
+                        + "/reinvestigate\">")
+                .doesNotContain("id=\"feedback-form\"", "report.md");
+    }
+
+    @Test
+    void feedbackPostStoresItAndThePageShowsTheConfirmationAndTheEntry() throws Exception {
+        String id = completedIncidentWithReport(List.of());
+
+        MvcResult result = mvc.perform(post("/incidents/{id}/feedback", id)
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .param("rating", "helpful")
+                        .param("note", "Spot on <b>deploy</b>"))
+                .andExpect(status().isFound())
+                .andExpect(redirectedUrl("/incidents/" + id + "#feedback"))
+                .andExpect(flash().attribute(IncidentPageController.FLASH_NOTICE,
+                        IncidentPageController.FEEDBACK_RECORDED_MESSAGE))
+                .andReturn();
+
+        List<Feedback> stored = feedbackService.list(id);
+        assertThat(stored).singleElement().satisfies(f -> {
+            assertThat(f.rating()).isEqualTo(Feedback.Rating.HELPFUL);
+            assertThat(f.note()).isEqualTo("Spot on <b>deploy</b>");
+        });
+        String page = followRedirect(result);
+        assertThat(page).contains("id=\"flash-notice\"", IncidentPageController.FEEDBACK_RECORDED_MESSAGE)
+                .doesNotContain("id=\"flash-error\"");
+        assertThat(page.indexOf("id=\"flash-notice\"")).as("flash near the top").isLessThan(page.indexOf("<dl"));
+        String section = section(page, "feedback");
+        assertThat(section)
+                .contains("type=\"radio\" name=\"rating\" value=\"helpful\"",
+                        "type=\"radio\" name=\"rating\" value=\"unhelpful\"")
+                .contains("name=\"note\" maxlength=\"2000\"")
+                .contains("action=\"/incidents/" + id + "/feedback\"")
+                .contains("<span class=\"feedback-rating feedback-helpful\">helpful</span>")
+                .contains("<span class=\"ev feedback-time\">"
+                        + renderer.times().dateTime(stored.get(0).createdAt()) + "</span>")
+                .contains("<span class=\"feedback-note\">Spot on &lt;b&gt;deploy&lt;/b&gt;</span>")
+                .doesNotContain("No feedback yet.", "<b>deploy");
+    }
+
+    @Test
+    void tooLongFeedbackNoteShowsAMessageAndStoresNothing() throws Exception {
+        String id = completedIncidentWithReport(List.of());
+
+        MvcResult result = mvc.perform(post("/incidents/{id}/feedback", id)
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .param("rating", "unhelpful")
+                        .param("note", "x".repeat(FeedbackService.MAX_NOTE + 1)))
+                .andExpect(status().isFound())
+                .andExpect(redirectedUrl("/incidents/" + id + "#feedback"))
+                .andExpect(flash().attribute(IncidentPageController.FLASH_ERROR,
+                        IncidentPageController.FEEDBACK_NOTE_MESSAGE))
+                .andReturn();
+
+        assertThat(feedbackService.list(id)).isEmpty();
+        String page = followRedirect(result);
+        assertThat(page).contains("id=\"flash-error\"", IncidentPageController.FEEDBACK_NOTE_MESSAGE)
+                .doesNotContain("id=\"flash-notice\"");
+        assertThat(section(page, "feedback")).contains("No feedback yet.");
+    }
+
+    @Test
+    void feedbackOnAnIncidentWithoutReportIs404() throws Exception {
+        String id = storedIncident(Severity.CRITICAL);
+        finishedInvestigation(id, InvestigationStatus.FAILED);
+
+        String page = html(mvc.perform(post("/incidents/{id}/feedback", id)
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .param("rating", "helpful"))
+                .andExpect(status().isNotFound()));
+
+        assertThat(page).contains("class=\"error-status\">404</p>");
+        assertThat(feedbackService.list(id)).isEmpty();
+    }
+
+    @Test
+    void reinvestigateRedirectsAndThePageThenShowsTheInProgressState() throws Exception {
+        // Hold the re-investigation at its first model call so the page is rendered while it is RUNNING.
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        chatModel.reset().enqueue(request -> {
+            entered.countDown();
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return ScriptedChatModel.finalAnswer(ScriptedChatModel.DEFAULT_FINAL_ANSWER).apply(request);
+        });
+        String id = completedIncidentWithReport(List.of());
+        try {
+            MvcResult result = mvc.perform(post("/incidents/{id}/reinvestigate", id))
+                    .andExpect(status().isFound())
+                    .andExpect(redirectedUrl("/incidents/" + id))
+                    .andExpect(flash().attribute(IncidentPageController.FLASH_NOTICE,
+                            IncidentPageController.REINVESTIGATION_STARTED_MESSAGE))
+                    .andReturn();
+            started.add(id);
+            assertThat(entered.await(10, TimeUnit.SECONDS)).as("re-investigation reached the model").isTrue();
+
+            String page = followRedirect(result);
+
+            assertInProgress(page, id, "RUNNING");
+            assertThat(page).contains("id=\"flash-notice\"", IncidentPageController.REINVESTIGATION_STARTED_MESSAGE)
+                    .contains("An earlier report is stored");
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void reinvestigateWhileRunningShowsTheConflictMessageAndKeepsTheReport() throws Exception {
+        // An earlier report plus a RUNNING re-investigation held through the repository, not a real run.
+        String id = completedIncidentWithReport(List.of());
+        assertThat(investigations.restart(pending(id))).isTrue();
+        assertThat(investigations.transition(id, InvestigationStatus.PENDING, InvestigationStatus.RUNNING)).isTrue();
+        InvestigationReport before = reports.find(id).orElseThrow();
+
+        MvcResult result = mvc.perform(post("/incidents/{id}/reinvestigate", id))
+                .andExpect(status().isFound())
+                .andExpect(redirectedUrl("/incidents/" + id))
+                .andExpect(flash().attribute(IncidentPageController.FLASH_ERROR,
+                        IncidentPageController.REINVESTIGATION_CONFLICT_MESSAGE))
+                .andReturn();
+
+        assertThat(reports.find(id)).contains(before);
+        assertThat(investigations.find(id).orElseThrow().status()).isEqualTo(InvestigationStatus.RUNNING);
+        String page = followRedirect(result);
+        assertThat(page).contains("id=\"flash-error\"", IncidentPageController.REINVESTIGATION_CONFLICT_MESSAGE);
+        assertInProgress(page, id, "RUNNING");
+    }
+
+    @Test
+    void rateLimitedReinvestigateShowsTheRateLimitMessageAndKeepsTheReport() throws Exception {
+        String service = "rl-" + randomIncidentId().substring(4);
+        String id = storedIncident(Severity.CRITICAL, T0, service);
+        finishedInvestigation(id, InvestigationStatus.COMPLETED);
+        reports.saveIfAbsent(fullReport(id, List.of()));
+        doReturn(false).when(rateLimiter).tryInvestigation(service);
+
+        MvcResult result = mvc.perform(post("/incidents/{id}/reinvestigate", id))
+                .andExpect(status().isFound())
+                .andExpect(redirectedUrl("/incidents/" + id))
+                .andExpect(flash().attribute(IncidentPageController.FLASH_ERROR,
+                        IncidentPageController.REINVESTIGATION_RATE_LIMITED_MESSAGE))
+                .andReturn();
+
+        assertThat(investigations.find(id).orElseThrow().status()).isEqualTo(InvestigationStatus.COMPLETED);
+        String page = followRedirect(result);
+        assertFinished(page);
+        assertThat(page).contains("id=\"flash-error\"", IncidentPageController.REINVESTIGATION_RATE_LIMITED_MESSAGE)
+                .contains("checkout errors rose", "badge-status-COMPLETED");
+    }
+
+    @Test
+    void finishedReportOffersMarkdownDownloadAndReinvestigateControl() throws Exception {
+        String id = completedIncidentWithReport(List.of());
+
+        String page = html(mvc.perform(get("/incidents/{id}", id)).andExpect(status().isOk()));
+
+        assertThat(section(page, "report-controls"))
+                .contains("<form id=\"reinvestigate-form\" method=\"post\" action=\"/incidents/" + id
+                        + "/reinvestigate\">")
+                .contains("id=\"report-download\" href=\"/api/v1/incidents/" + id + "/report.md\"");
+        assertThat(page).contains("id=\"feedback-form\"")
+                .doesNotContain("id=\"flash-notice\"", "id=\"flash-error\"");
+    }
+
+    /** Follows a Post-Redirect-Get redirect, carrying the flash attributes as the browser session would. */
+    private String followRedirect(MvcResult result) throws Exception {
+        String url = result.getResponse().getRedirectedUrl();
+        assertThat(url).isNotNull();
+        int hash = url.indexOf('#');
+        String path = hash < 0 ? url : url.substring(0, hash);
+        return html(mvc.perform(get(path).flashAttrs(result.getFlashMap())).andExpect(status().isOk()));
     }
 
     private static void assertInProgress(String page, String id, String status) {
@@ -447,7 +643,10 @@ class IncidentPageControllerTest {
                 .contains("class=\"badge badge-status-" + status + "\">" + status + "</span>")
                 .doesNotContain("id=\"summary\"", "id=\"hypotheses\"", "id=\"timeline\"", "id=\"actions\"",
                         "id=\"open-questions\"", "id=\"evidence\"", "id=\"ev-", "What happened",
-                        "Recommended next steps", "id=\"investigation-failed\"");
+                        "Recommended next steps", "id=\"investigation-failed\"")
+                // Feedback, download and re-investigate are hidden until the investigation finishes (Req 8.1, 8.6).
+                .doesNotContain("id=\"report-controls\"", "id=\"reinvestigate-form\"", "id=\"feedback\"",
+                        "id=\"feedback-form\"", "report.md");
     }
 
     private static void assertFinished(String page) {
@@ -455,9 +654,9 @@ class IncidentPageControllerTest {
                 .doesNotContain("http-equiv=\"refresh\"", "data-live-report", "data-incident-id", "id=\"in-progress\"");
     }
 
-    /** The markup of {@code <section id="name">} up to its closing tag. */
+    /** The markup of {@code <section id="name" ...>} up to its closing tag. */
     private static String section(String page, String name) {
-        int start = page.indexOf("<section id=\"" + name + "\">");
+        int start = page.indexOf("<section id=\"" + name + "\"");
         assertThat(start).as("section %s", name).isNotNegative();
         return page.substring(start, page.indexOf("</section>", start));
     }
@@ -547,8 +746,12 @@ class IncidentPageControllerTest {
     }
 
     private String storedIncident(Severity severity, Instant detectedAt) {
+        return storedIncident(severity, detectedAt, "checkout-api");
+    }
+
+    private String storedIncident(Severity severity, Instant detectedAt, String service) {
         String id = randomIncidentId();
-        incidents.save(new Incident(id, "HighErrorRate on checkout-api", severity, "checkout-api", detectedAt,
+        incidents.save(new Incident(id, "HighErrorRate on checkout-api", severity, service, detectedAt,
                 "HighErrorRate", null, null, id.substring(4) + "0".repeat(52), IncidentStatus.REPORTED));
         return id;
     }

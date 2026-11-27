@@ -10,6 +10,10 @@ import dev.investigator.config.WebhookProperties;
 import dev.investigator.domain.Incident;
 import dev.investigator.domain.Investigation;
 import dev.investigator.domain.InvestigationStatus;
+import dev.investigator.feedback.Feedback;
+import dev.investigator.feedback.FeedbackService;
+import dev.investigator.investigation.InvestigationInProgressException;
+import dev.investigator.investigation.InvestigationOrchestrator;
 import dev.investigator.ratelimit.InvestigationRateLimitedException;
 import dev.investigator.report.ApprovalRepository;
 import dev.investigator.report.DisplayTimeFormatter;
@@ -24,6 +28,7 @@ import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -31,6 +36,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -42,6 +48,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.ModelAndView;
+import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
 /**
  * Report_Page: lists Incidents newest first at {@code /incidents} and shows one Incident with its
@@ -54,6 +61,11 @@ import org.springframework.web.servlet.ModelAndView;
  * <p>{@code GET /incidents/new} and {@code POST /incidents} serve the New_Alert_Form, which creates alerts
  * through the same {@link AlertIntakeService} as {@code POST /api/v1/alerts} (web UI Req 3). These paths are
  * outside the webhook authentication filter, so the form is disabled whenever a Webhook_Secret is set.
+ *
+ * <p>{@code POST /incidents/{id}/feedback} and {@code POST /incidents/{id}/reinvestigate} reuse
+ * {@link FeedbackService#submit} and {@link InvestigationOrchestrator#reinvestigate} (web UI Req 8). Both
+ * follow Post-Redirect-Get: the outcome travels as a flash attribute ({@value #FLASH_NOTICE} or
+ * {@value #FLASH_ERROR}) to the redirected Report_Page, so a reload never re-submits (Req 8.7).
  */
 @Controller
 public class IncidentPageController {
@@ -62,6 +74,24 @@ public class IncidentPageController {
             "Browser alert creation is disabled because webhook authentication is configured.";
     static final String RATE_LIMITED_MESSAGE =
             "The investigation rate limit for this service is reached; no alert was created. Try again later.";
+
+    /** Flash attribute names: a confirmation and an error message for the Report_Page (Req 8.2, 8.5). */
+    static final String FLASH_NOTICE = "flashNotice";
+    static final String FLASH_ERROR = "flashError";
+
+    static final String FEEDBACK_RECORDED_MESSAGE = "Thank you, your feedback is recorded.";
+    static final String FEEDBACK_RATING_MESSAGE = "Choose helpful or unhelpful; no feedback was recorded.";
+    static final String FEEDBACK_NOTE_MESSAGE =
+            "The note is longer than " + FeedbackService.MAX_NOTE + " characters; no feedback was recorded.";
+    static final String REINVESTIGATION_STARTED_MESSAGE = "Re-investigation started.";
+    static final String REINVESTIGATION_CONFLICT_MESSAGE =
+            "An investigation is already running for this incident; the current report is unchanged.";
+    static final String REINVESTIGATION_RATE_LIMITED_MESSAGE =
+            "The investigation rate limit for this service is reached; the current report is unchanged. "
+                    + "Try again later.";
+
+    /** The ratings {@code POST /api/v1/reports/{id}/feedback} accepts, any case. */
+    private static final Pattern RATING = Pattern.compile("(?i)helpful|unhelpful");
 
     /** Finished_Status values: the Report_Page stops refreshing and shows the report or failure (Req 4.5). */
     static final Set<String> FINISHED = Set.of(InvestigationStatus.COMPLETED.name(),
@@ -76,10 +106,15 @@ public class IncidentPageController {
     private final WebhookProperties webhook;
     private final Validator validator;
     private final Clock clock;
+    private final FeedbackService feedback;
+    private final InvestigationOrchestrator orchestrator;
 
     public IncidentPageController(IncidentRepository incidents, InvestigationRepository investigations,
             ReportRepository reports, ReportRenderer renderer, AlertIntakeService intake, WebhookProperties webhook,
-            Validator validator, Clock clock, ApprovalRepository approvals) {
+            Validator validator, Clock clock, ApprovalRepository approvals, FeedbackService feedback,
+            InvestigationOrchestrator orchestrator) {
+        this.feedback = feedback;
+        this.orchestrator = orchestrator;
         this.incidents = incidents;
         this.investigations = investigations;
         this.reports = reports;
@@ -197,12 +232,81 @@ public class IncidentPageController {
         model.addAttribute("finished", FINISHED.contains(row.investigationStatus()));
         model.addAttribute("knownEvidenceIds", Set.copyOf(knownEvidenceIds));
         model.addAttribute("actionApprovals", actionApprovals);
+        // FeedbackService.list is oldest first; the page lists the newest first (Req 8.3).
+        List<FeedbackRow> feedbackRows = new ArrayList<>(feedback.list(id).stream().map(this::feedbackRow).toList());
+        Collections.reverse(feedbackRows);
+        model.addAttribute("feedback", feedbackRows);
+        // flashNotice / flashError arrive from the POST handlers as flash attributes (Req 8.2, 8.5).
         model.addAttribute("dashboardLinks", incident.dashboardLinks().stream()
                 .filter(Objects::nonNull)
                 .map(link -> new DashboardLink(link, HttpUrlValidator.isHttpUrl(link)))
                 .toList());
         model.addAttribute("zone", renderer.times().zone().getId());
         return "incident";
+    }
+
+    /**
+     * Records feedback through {@link FeedbackService#submit} with the rules of
+     * {@code POST /api/v1/reports/{id}/feedback}: rating {@code helpful} or {@code unhelpful} (any case), note
+     * at most {@value FeedbackService#MAX_NOTE} characters (Req 8.1, 8.2). The outcome is flashed to the
+     * Report_Page's feedback section; invalid input stores nothing. A malformed ID or an Incident without a
+     * stored report gives 404.
+     */
+    @PostMapping("/incidents/{id}/feedback")
+    public String submitFeedback(@PathVariable String id, @RequestParam(required = false) String rating,
+            @RequestParam(required = false) String note, RedirectAttributes flash) {
+        requireIncidentId(id);
+        if (reports.find(id).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        String target = "redirect:/incidents/" + id + "#feedback";
+        if (rating == null || !RATING.matcher(rating).matches()) {
+            flash.addFlashAttribute(FLASH_ERROR, FEEDBACK_RATING_MESSAGE);
+            return target;
+        }
+        if (note != null && note.length() > FeedbackService.MAX_NOTE) {
+            flash.addFlashAttribute(FLASH_ERROR, FEEDBACK_NOTE_MESSAGE);
+            return target;
+        }
+        Feedback.Rating parsed = Feedback.Rating.valueOf(rating.toUpperCase(Locale.ROOT));
+        if (feedback.submit(id, parsed, note, null).isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+        flash.addFlashAttribute(FLASH_NOTICE, FEEDBACK_RECORDED_MESSAGE);
+        return target;
+    }
+
+    /**
+     * Starts a re-investigation through {@link InvestigationOrchestrator#reinvestigate} and returns to the
+     * Report_Page, which then shows the in-progress state (Req 8.4). An investigation already in progress or
+     * an empty rate-limit bucket leaves the report unchanged and flashes the reason (Req 8.5). A malformed or
+     * unknown ID gives 404.
+     */
+    @PostMapping("/incidents/{id}/reinvestigate")
+    public String reinvestigate(@PathVariable String id, RedirectAttributes flash) {
+        requireIncidentId(id);
+        try {
+            if (orchestrator.reinvestigate(id).isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+            flash.addFlashAttribute(FLASH_NOTICE, REINVESTIGATION_STARTED_MESSAGE);
+        } catch (InvestigationInProgressException e) {
+            flash.addFlashAttribute(FLASH_ERROR, REINVESTIGATION_CONFLICT_MESSAGE);
+        } catch (InvestigationRateLimitedException e) {
+            flash.addFlashAttribute(FLASH_ERROR, REINVESTIGATION_RATE_LIMITED_MESSAGE);
+        }
+        return "redirect:/incidents/" + id;
+    }
+
+    private static void requireIncidentId(String id) {
+        if (!IncidentController.isIncidentId(id)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        }
+    }
+
+    private FeedbackRow feedbackRow(Feedback f) {
+        return new FeedbackRow(f.rating().name().toLowerCase(Locale.ROOT), f.note(),
+                f.createdAt() == null ? "" : renderer.times().dateTime(f.createdAt()));
     }
 
     /**
@@ -240,6 +344,10 @@ public class IncidentPageController {
      * otherwise the page shows it as plain text (Req 9.3).
      */
     public record DashboardLink(String url, boolean linkable) {
+    }
+
+    /** One recorded feedback as listed on the Report_Page; {@code time} is in the Display_Timezone (Req 8.3). */
+    public record FeedbackRow(String rating, String note, String time) {
     }
 
     /** One Incident as shown on the pages; {@code detected} is in the Display_Timezone. */

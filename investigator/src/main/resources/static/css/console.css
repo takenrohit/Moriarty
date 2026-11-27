@@ -204,7 +204,7 @@ tr:target,
 }
 .alert-form .field { display: flex; flex-direction: column; gap: 0.2rem; margin-bottom: 0.75rem; }
 .alert-form label { color: var(--muted); font-size: 12px; }
-.alert-form input, .alert-form select {
+.alert-form input, .alert-form select, .alert-form textarea {
   padding: 0.3rem 0.5rem;
   color: var(--fg);
   background: var(--bg);
@@ -213,7 +213,7 @@ tr:target,
   font: inherit;
 }
 .alert-form input:focus, .alert-form select:focus { outline: 1px solid var(--link); }
-.alert-form button {
+.alert-form button, .report-controls button {
   align-self: flex-start;
   padding: 0.35rem 1rem;
   color: #fff;
@@ -234,6 +234,17 @@ tr:target,
 .notice { border-left-color: var(--amber); }
 .form-errors p { margin: 0 0 0.25rem; }
 .form-errors ul { margin: 0; }
+/* Report controls, feedback and flash messages */
+.flash-notice { border-left-color: var(--green); }
+.report-controls { display: flex; align-items: center; gap: 1rem; margin: 0.75rem 0; }
+.report-controls form { margin: 0; }
+.rating-choices { display: flex; gap: 1rem; border: 0; padding: 0; margin: 0 0 0.75rem; }
+.rating-choices legend { padding: 0; margin-bottom: 0.25rem; }
+.alert-form .rating-choices label { color: var(--fg); font-size: inherit; }
+.feedback-list { list-style: none; padding-left: 0; }
+.feedback-rating { font-weight: 600; }
+.feedback-helpful { color: var(--green); }
+.feedback-unhelpful { color: var(--red); }
 
 /* Error page */
 .error-page { padding: 3rem 1.25rem; }

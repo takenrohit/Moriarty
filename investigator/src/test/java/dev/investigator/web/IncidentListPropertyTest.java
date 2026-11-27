@@ -10,6 +10,8 @@ import dev.investigator.config.WebhookProperties;
 import dev.investigator.domain.Incident;
 import dev.investigator.domain.IncidentStatus;
 import dev.investigator.domain.Severity;
+import dev.investigator.feedback.FeedbackService;
+import dev.investigator.investigation.InvestigationOrchestrator;
 import dev.investigator.report.InMemoryApprovalRepository;
 import dev.investigator.report.ReportRenderer;
 import dev.investigator.store.InMemoryIncidentRepository;
@@ -68,6 +70,11 @@ class IncidentListPropertyTest {
     private Validator validator;
     @Autowired
     private Clock clock;
+    // Not exercised by the list pages; the shared context's beans satisfy the constructor.
+    @Autowired
+    private FeedbackService feedback;
+    @Autowired
+    private InvestigationOrchestrator orchestrator;
 
     @ParameterizedTest(name = "seed={0}")
     @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
@@ -81,7 +88,7 @@ class IncidentListPropertyTest {
 
             MockMvc mvc = MockMvcBuilders.standaloneSetup(new IncidentPageController(store,
                     new InMemoryInvestigationRepository(), new InMemoryReportRepository(), renderer, intake, webhook,
-                    validator, clock, new InMemoryApprovalRepository()))
+                    validator, clock, new InMemoryApprovalRepository(), feedback, orchestrator))
                     // Delegate so the standalone builder does not re-bind the shared resolver to its stub context.
                     .setViewResolvers((ViewResolver) viewResolver::resolveViewName)
                     .build();
