@@ -1,5 +1,6 @@
 package dev.investigator.config;
 
+import dev.investigator.investigation.BlankAiMessageChatModel;
 import dev.investigator.investigation.InvestigationContextRegistry;
 import dev.investigator.investigation.InvestigatorAgent;
 import dev.investigator.investigation.TokenBudgetChatModel;
@@ -55,6 +56,8 @@ public class AgentConfig {
             log.warn("{} Investigations will fail until a ChatModel is configured.", NO_CHAT_MODEL);
             chatModel = new UnavailableChatModel();
         }
+        // Blank model answers in the history would make Bedrock reject the correction request.
+        chatModel = new BlankAiMessageChatModel(chatModel);
         // Token_Budget per investigation (Req 6.5): refuses requests once the budget is reached.
         chatModel = new TokenBudgetChatModel(chatModel, contexts);
         int maxMessages = properties.agent().memoryMaxMessages();
