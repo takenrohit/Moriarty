@@ -20,7 +20,9 @@ import org.springframework.stereotype.Component;
  *
  * <ul>
  *   <li>Failing spans: error spans grouped by {@code (service, operation, peerService)}, sorted by
- *       count descending then key ascending (nulls first), top {@value #TOP_FAILING_SPANS} kept.
+ *       count descending, then mean span duration ascending (the deepest span of a failing chain
+ *       first, so the headline names the error origin), then key ascending (nulls first), top
+ *       {@value #TOP_FAILING_SPANS} kept.
  *   <li>Slow traces: duration at least the slow threshold (default 2 s), matching the
  *       {@code TraceClient} contract.
  *   <li>Example trace IDs: error traces first, then the others, in result order, up to the configured
@@ -36,6 +38,13 @@ public class TraceSummarizer {
     private static final Comparator<SpanKey> KEY_ORDER = Comparator.comparing(SpanKey::service, NULLS_FIRST)
             .thenComparing(SpanKey::operation, NULLS_FIRST)
             .thenComparing(SpanKey::peerService, NULLS_FIRST);
+    /**
+     * Count descending, then mean duration ascending: a child span lies inside its parent, so among
+     * equally counted groups of a failing chain the shortest is the deepest, nearest the error origin.
+     */
+    private static final Comparator<SpanStats> STATS_ORDER = Comparator.<SpanStats>comparingInt(s -> s.count)
+            .reversed()
+            .thenComparingLong(SpanStats::meanNanos);
 
     private final int exampleCount;
     private final Duration slowThreshold;
@@ -58,7 +67,7 @@ public class TraceSummarizer {
         List<TraceRecord> traces = result.traces();
         int errorCount = 0;
         int slowCount = 0;
-        Map<SpanKey, Integer> spanCounts = new LinkedHashMap<>();
+        Map<SpanKey, SpanStats> spanCounts = new LinkedHashMap<>();
         List<String> errorIds = new ArrayList<>();
         List<String> otherIds = new ArrayList<>();
         for (TraceRecord trace : traces) {
@@ -73,16 +82,17 @@ public class TraceSummarizer {
             }
             for (SpanRecord span : trace.spans()) {
                 if (span.error()) {
-                    spanCounts.merge(new SpanKey(span.service(), span.operation(), span.peerService()), 1, Integer::sum);
+                    spanCounts.computeIfAbsent(new SpanKey(span.service(), span.operation(), span.peerService()),
+                            k -> new SpanStats()).add(span.duration());
                 }
             }
         }
         List<TraceSummary.FailingSpan> top = spanCounts.entrySet().stream()
-                .sorted(Map.Entry.<SpanKey, Integer>comparingByValue(Comparator.reverseOrder())
+                .sorted(Map.Entry.<SpanKey, SpanStats>comparingByValue(STATS_ORDER)
                         .thenComparing(Map.Entry.comparingByKey(KEY_ORDER)))
                 .limit(TOP_FAILING_SPANS)
                 .map(e -> new TraceSummary.FailingSpan(
-                        e.getKey().service(), e.getKey().operation(), e.getKey().peerService(), e.getValue()))
+                        e.getKey().service(), e.getKey().operation(), e.getKey().peerService(), e.getValue().count))
                 .toList();
         List<String> examples = new ArrayList<>(errorIds);
         examples.addAll(otherIds);
@@ -105,5 +115,25 @@ public class TraceSummarizer {
     }
 
     private record SpanKey(String service, String operation, String peerService) {
+    }
+
+    /** Error-span count and duration total of one span group. */
+    private static final class SpanStats {
+        int count;
+        long timedCount;
+        long totalNanos;
+
+        void add(Duration duration) {
+            count++;
+            if (duration != null) {
+                timedCount++;
+                totalNanos += duration.toNanos();
+            }
+        }
+
+        /** Mean duration in nanoseconds, or {@link Long#MAX_VALUE} when no span had a duration. */
+        long meanNanos() {
+            return timedCount == 0 ? Long.MAX_VALUE : totalNanos / timedCount;
+        }
     }
 }

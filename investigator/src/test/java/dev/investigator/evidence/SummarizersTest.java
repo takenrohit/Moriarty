@@ -61,8 +61,11 @@ class SummarizersTest {
         assertThat(summary.errorTraceCount()).isEqualTo(50);
         assertThat(summary.slowTraceCount()).isEqualTo(50);
         assertThat(summary.truncated()).isTrue();
-        assertThat(summary.topFailingSpans())
-                .contains(new TraceSummary.FailingSpan("payment-gateway", "POST /authorize", "payment-provider", 50));
+        // All three spans of the failing chain fail equally often; the deepest one comes first.
+        assertThat(summary.topFailingSpans()).first()
+                .isEqualTo(new TraceSummary.FailingSpan("payment-gateway", "POST /authorize", "payment-provider", 50));
+        assertThat(summary.headline())
+                .endsWith("top failing span payment-gateway POST /authorize -> payment-provider (50)");
         assertThat(summary.exampleTraceIds()).hasSize(3).containsExactly(
                 result.traces().get(0).traceId(), result.traces().get(1).traceId(), result.traces().get(2).traceId());
     }
