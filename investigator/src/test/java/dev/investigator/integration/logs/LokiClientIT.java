@@ -113,6 +113,24 @@ class LokiClientIT {
     }
 
     @Test
+    void jsonEscapedQuotesAreUnescapedOnce() {
+        // Bedrock Nova sent its LogQL with every quote still escaped (first Compose demo run).
+        stub(json(200, STREAMS_BODY));
+
+        client().search("checkout-api", "{service=\\\"checkout-api\\\"} |= \\\"ERROR\\\" |~ \\\"payment\\\"",
+                START, END, 10);
+
+        LOKI.verify(1, getRequestedFor(urlPathEqualTo("/loki/api/v1/query_range"))
+                .withQueryParam("query", equalTo("{service_name=\"checkout-api\"} |= \"ERROR\" |~ \"payment\"")));
+    }
+
+    @Test
+    void escapedQuoteInsideNormallyQuotedFilterIsKept() {
+        assertThat(LokiLogClient.logql("service_name", "checkout-api", "|= \"say \\\"hi\\\"\""))
+                .isEqualTo("{service_name=\"checkout-api\"} |= \"say \\\"hi\\\"\"");
+    }
+
+    @Test
     void exactlyLimitEntriesIsNotTruncated() {
         stub(json(200, STREAMS_BODY));
 

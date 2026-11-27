@@ -124,7 +124,7 @@ public class LokiLogClient implements LogClient {
      */
     public static String logql(String serviceLabel, String service, String query) {
         String selector = "{" + serviceLabel + "=\"" + service.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
-        String rest = query.strip();
+        String rest = unescapeQuotes(query.strip());
         if (rest.startsWith("{")) {
             int close = selectorEnd(rest);
             if (close < 0) {
@@ -140,6 +140,23 @@ public class LokiLogClient implements LogClient {
                     "LogQL query is not a stream selector with line filters", LOGQL_HINT);
         }
         return selector + " " + rest;
+    }
+
+    /**
+     * Undoes one level of JSON escaping when every double quote in {@code query} is escaped, as in
+     * {@code {service=\"checkout-api\"} |= \"timeout\"} (seen from Bedrock Nova tool arguments). A query
+     * with at least one unescaped quote is valid LogQL quoting and is returned unchanged.
+     */
+    static String unescapeQuotes(String query) {
+        if (!query.contains("\\\"")) {
+            return query;
+        }
+        for (int i = 0; i < query.length(); i++) {
+            if (query.charAt(i) == '"' && (i == 0 || query.charAt(i - 1) != '\\')) {
+                return query;
+            }
+        }
+        return query.replace("\\\"", "\"");
     }
 
     /** Index of the closing brace of the selector that starts at index 0, skipping quoted text; -1 if none. */
