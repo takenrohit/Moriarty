@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<!--/*
+  Incident table body (Req 2.1, 2.2, 2.3). Included by incidents.html and returned alone by
+  GET /incidents/fragment, which console.js swaps in every 10 seconds (Req 2.4). The empty state lives
+  inside the tbody so a refresh moves between "no incidents" and rows without a page reload.
+  Untrusted text is printed with th:text only; hrefs carry only the stored incident id (Req 9.1, 9.3).
+*/-->
+<body>
+<table>
+<tbody id="incident-rows" th:fragment="rows">
+<tr th:if="${#lists.isEmpty(incidents)}" class="empty-state">
+  <td colspan="6">No incidents yet. <a href="/incidents/new" th:href="@{/incidents/new}">Raise a new alert</a>
+    to start an investigation.</td>
+</tr>
+<tr th:each="i : ${incidents}" class="incident-row">
+  <td class="ev"><a th:href="@{/incidents/{id}(id=${i.id})}" th:text="${i.id}">inc-000000000000</a></td>
+  <td><a th:href="@{/incidents/{id}(id=${i.id})}" th:text="${i.title}">HighErrorRate on checkout-api</a></td>
+  <td th:text="${i.service}">checkout-api</td>
+  <td><span th:replace="~{fragments/badges :: severity(${i.severity})}">Critical</span></td>
+  <td th:text="${i.detected}">2026-11-23 20:10 IST</td>
+  <td><span th:replace="~{fragments/badges :: status(${i.investigationStatus})}">COMPLETED</span></td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

@@ -5,32 +5,22 @@
 <header th:replace="~{fragments/layout :: header}"></header>
 <main>
 <h1>Incidents</h1>
-<p class="muted">Newest first.</p>
+<p class="muted">Newest first. The table refreshes every 10 seconds.</p>
+<p id="refresh-failed" class="refresh-failed" role="status" hidden>Refresh failed; showing the last loaded table.</p>
 
-<p th:if="${#lists.isEmpty(incidents)}">No incidents yet.</p>
-
-<table th:unless="${#lists.isEmpty(incidents)}">
+<!--/* data-live-list marks the list page so console.js starts the 10-second refresh only here. */-->
+<table id="incident-table" data-live-list>
   <thead>
   <tr>
-    <th>Detected</th>
-    <th>Incident</th>
+    <th>ID</th>
+    <th>Title</th>
     <th>Service</th>
     <th>Severity</th>
-    <th>Incident status</th>
-    <th>Investigation</th>
+    <th>Detected</th>
+    <th>Status</th>
   </tr>
   </thead>
-  <tbody>
-  <tr th:each="i : ${incidents}">
-    <td th:text="${i.detected}">2026-11-23 20:10 IST</td>
-    <td><a th:href="@{/incidents/{id}(id=${i.id})}" th:text="${i.title}">HighErrorRate on checkout-api</a>
-      <div class="muted ev" th:text="${i.id}">inc-000000000000</div></td>
-    <td th:text="${i.service}">checkout-api</td>
-    <td><span th:replace="~{fragments/badges :: severity(${i.severity})}">Critical</span></td>
-    <td th:text="${i.incidentStatus}">REPORTED</td>
-    <td><span th:replace="~{fragments/badges :: status(${i.investigationStatus})}">COMPLETED</span></td>
-  </tr>
-  </tbody>
+  <tbody th:replace="~{fragments/incident-rows :: rows}"></tbody>
 </table>
 </main>
 <footer th:replace="~{fragments/layout :: footer}"></footer>

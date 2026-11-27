@@ -20,11 +20,15 @@ import dev.investigator.domain.RecommendedAction;
 import dev.investigator.domain.Severity;
 import dev.investigator.domain.TimelineEntry;
 import dev.investigator.report.ReportRenderer;
+import dev.investigator.store.InMemoryIncidentRepository;
+import dev.investigator.store.InMemoryInvestigationRepository;
+import dev.investigator.store.InMemoryReportRepository;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
 import dev.investigator.store.ReportRepository;
 import dev.investigator.testsupport.InvestigatorSpringBootTest;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
@@ -34,6 +38,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.servlet.ViewResolver;
+import org.thymeleaf.spring6.view.ThymeleafViewResolver;
 
 /** MockMvc examples for the console pages served by {@link IncidentPageController}. */
 @InvestigatorSpringBootTest
@@ -52,6 +59,8 @@ class IncidentPageControllerTest {
     private ReportRepository reports;
     @Autowired
     private ReportRenderer renderer;
+    @Autowired
+    private ThymeleafViewResolver viewResolver;
 
     @Test
     void listPageHasConsoleShellWithHeaderLinksZoneAndStylesheet() throws Exception {
@@ -97,6 +106,57 @@ class IncidentPageControllerTest {
     }
 
     @Test
+    void emptyStoreShowsEmptyStateWithNewAlertLink() throws Exception {
+        // The shared context's stores hold other tests' incidents, so render with fresh, empty stores
+        // through the application's own Thymeleaf view resolver.
+        MockMvc empty = MockMvcBuilders.standaloneSetup(new IncidentPageController(new InMemoryIncidentRepository(),
+                new InMemoryInvestigationRepository(), new InMemoryReportRepository(), renderer))
+                // Delegate so the standalone builder does not re-bind the shared resolver to its stub context.
+                .setViewResolvers((ViewResolver) viewResolver::resolveViewName)
+                .build();
+
+        String page = html(empty.perform(get("/incidents")).andExpect(status().isOk()));
+        assertThat(page)
+                .contains("<tbody id=\"incident-rows\">", "class=\"empty-state\"", "No incidents yet.")
+                .contains("<a href=\"/incidents/new\">Raise a new alert</a>")
+                .contains("id=\"refresh-failed\"", "data-live-list")
+                .doesNotContain("class=\"incident-row\"");
+        assertThat(page.substring(page.indexOf("id=\"refresh-failed\""))).startsWith(
+                "id=\"refresh-failed\" class=\"refresh-failed\" role=\"status\" hidden>");
+
+        String fragment = html(empty.perform(get("/incidents/fragment")).andExpect(status().isOk()));
+        assertThat(fragment).contains("No incidents yet.", "<a href=\"/incidents/new\">Raise a new alert</a>");
+    }
+
+    @Test
+    void listRowsAppearNewestFirstAndLinkToTheReportPage() throws Exception {
+        String older = storedIncident(Severity.WARNING, T0.plus(Duration.ofDays(400)));
+        String newer = storedIncident(Severity.CRITICAL, T0.plus(Duration.ofDays(401)));
+
+        String page = html(mvc.perform(get("/incidents")).andExpect(status().isOk()));
+
+        assertThat(page)
+                .contains("<a href=\"/incidents/" + newer + "\">" + newer + "</a>")
+                .contains("<a href=\"/incidents/" + older + "\">" + older + "</a>")
+                .contains("badge-severity-Critical", "badge-severity-Warning", "badge-status-PENDING")
+                .doesNotContain("class=\"empty-state\"");
+        assertThat(page.indexOf("/incidents/" + newer)).isLessThan(page.indexOf("/incidents/" + older));
+    }
+
+    @Test
+    void fragmentReturnsOnlyTheIncidentRowsTbody() throws Exception {
+        String id = storedIncident(Severity.INFO, T0.plus(Duration.ofDays(500)));
+
+        // Mapped to listFragment, not to /incidents/{id} (which would 404 on "fragment").
+        String fragment = html(mvc.perform(get("/incidents/fragment")).andExpect(status().isOk())).strip();
+
+        assertThat(fragment).startsWith("<tbody id=\"incident-rows\">").endsWith("</tbody>");
+        assertThat(fragment)
+                .contains("<a href=\"/incidents/" + id + "\">" + id + "</a>", "badge-severity-Info")
+                .doesNotContain("<html", "<head", "<header", "<thead", "<table", "Times in", "console.css");
+    }
+
+    @Test
     void malformedIdGives404HtmlErrorPage() throws Exception {
         assertErrorPage("not-an-id");
         assertErrorPage("inc-XYZ");
@@ -124,8 +184,12 @@ class IncidentPageControllerTest {
     }
 
     private String storedIncident(Severity severity) {
+        return storedIncident(severity, T0);
+    }
+
+    private String storedIncident(Severity severity, Instant detectedAt) {
         String id = randomIncidentId();
-        incidents.save(new Incident(id, "HighErrorRate on checkout-api", severity, "checkout-api", T0,
+        incidents.save(new Incident(id, "HighErrorRate on checkout-api", severity, "checkout-api", detectedAt,
                 "HighErrorRate", null, null, id.substring(4) + "0".repeat(52), IncidentStatus.REPORTED));
         return id;
     }

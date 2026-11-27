@@ -52,6 +52,17 @@ public class IncidentPageController {
         return "incidents";
     }
 
+    /**
+     * The incident table body alone, for the 10-second list refresh in {@code console.js} (Req 2.4). The
+     * literal path is more specific than {@code /incidents/{id}}, so Spring MVC maps it here rather than
+     * to {@link #detail}, which would reject {@code fragment} as a malformed ID.
+     */
+    @GetMapping("/incidents/fragment")
+    public String listFragment(Model model) {
+        model.addAttribute("incidents", incidents.findAllNewestFirst().stream().map(this::row).toList());
+        return "fragments/incident-rows :: rows";
+    }
+
     @GetMapping("/incidents/{id}")
     public String detail(@PathVariable String id, Model model) {
         if (!IncidentController.isIncidentId(id)) {
