@@ -20,6 +20,10 @@ import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.domain.RecommendedAction;
 import dev.investigator.domain.Severity;
 import dev.investigator.domain.TimelineEntry;
+import dev.investigator.report.ActionPolicy;
+import dev.investigator.report.Approval;
+import dev.investigator.report.ApprovalRepository;
+import dev.investigator.report.ReportRenderer;
 import dev.investigator.store.IncidentRepository;
 import dev.investigator.store.InvestigationRepository;
 import dev.investigator.store.ReportRepository;
@@ -29,8 +33,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
 import java.util.SplittableRandom;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
@@ -61,6 +68,11 @@ import org.springframework.test.web.servlet.MockMvc;
  * citation is plain text that no {@code href} contains.
  * <b>Validates: Requirements 6.1, 6.2, 6.4, 7.1</b>
  *
+ * <p>Property 8: for any recommended action that requires approval, the page shows the state of the newest
+ * Approval for that Incident and action, the decider and decision time exactly when that state is
+ * {@code APPROVED} or {@code REJECTED}, and {@code PENDING} when no Approval exists for it.
+ * <b>Validates: Requirements 7.2, 7.3, 7.4</b>
+ *
  * <p>All seeds share the Spring context of the other {@code @InvestigatorSpringBootTest} MockMvc tests and
  * store their data under fresh random incident ids, so seeds and property methods never collide. Data is
  * written straight to the stores (no investigation is started), so no Scripted_Chat_Model calls happen.
@@ -82,6 +94,9 @@ class ReportPagePropertyTest {
     private static final String CORRELATED = "correlated, not established";
     /** Every {@code href} attribute value on a page. */
     private static final Pattern HREF = Pattern.compile("href=\"([^\"]*)\"");
+    /** Action types that require approval under the ActionPolicy. */
+    private static final ActionType[] APPROVABLE = {ActionType.ROLLBACK, ActionType.RESTART,
+            ActionType.TRAFFIC_SHIFT, ActionType.CONFIG_CHANGE};
 
     @Autowired
     private MockMvc mvc;
@@ -91,6 +106,10 @@ class ReportPagePropertyTest {
     private InvestigationRepository investigations;
     @Autowired
     private ReportRepository reports;
+    @Autowired
+    private ApprovalRepository approvals;
+    @Autowired
+    private ReportRenderer renderer;
 
     @ParameterizedTest(name = "seed={0}")
     @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
@@ -210,6 +229,117 @@ class ReportPagePropertyTest {
             assertThat(occurrences(page, "class=\"ev evidence-unknown\"")).as("all plain ids")
                     .isEqualTo(cited.size() - (int) knownCites);
         });
+    }
+
+    // Feature: investigator-web-ui, Property 8: Approval state reflects the newest matching approval, defaulting to PENDING
+    @ParameterizedTest(name = "seed={0}")
+    @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
+    void approvalStateReflectsTheNewestMatchingApproval(long seed) {
+        PropertySeeds.check(seed, random -> {
+            String id = storedIncident(random);
+            String ev = "ev-" + id + "-1";
+            List<RecommendedAction> actions = new ArrayList<>();
+            for (int order = 1, n = 2 + random.nextInt(5); order <= n; order++) {
+                // The first action always needs approval; the rest mix every type.
+                ActionType type = order == 1 ? pick(random, APPROVABLE) : pick(random, ActionType.values());
+                actions.add(new RecommendedAction(order, type, "step " + order, ActionPolicy.requiresApproval(type),
+                        List.of(ev)));
+            }
+            InvestigationReport report = new InvestigationReport(id, InvestigationStatus.COMPLETED,
+                    "summary of " + id, new IncidentTimeline(List.of(new TimelineEntry(T0, "alert fires", List.of(ev)))),
+                    List.of(), actions, List.of(),
+                    List.of(new EvidenceRef(ev, EvidenceType.ALERT, "alert-intake", T0, "finding", "citation")),
+                    T0.plusSeconds(60));
+
+            // Per approvable action, 0 to 3 requests at distinct times, each left PENDING or decided; plus,
+            // sometimes, a newer decided decoy for order "<order><digit>", which must never match "#<order> ".
+            List<Approval> history = new ArrayList<>();
+            Map<Integer, Approval> newest = new HashMap<>();
+            for (RecommendedAction action : actions) {
+                if (!action.requiresApproval()) {
+                    continue;
+                }
+                List<Integer> offsets = new ArrayList<>(List.of(60, 120, 180, 240, 300, 360));
+                Collections.shuffle(offsets, new Random(random.nextLong()));
+                for (int k = random.nextInt(4), i = 0; i < k; i++) {
+                    Approval a = Approval.pending(randomApprovalId(), id,
+                            "#" + action.order() + " " + action.type().name() + ": step " + action.order(),
+                            T0.plusSeconds(offsets.get(i)));
+                    if (random.nextBoolean()) {
+                        a = a.decided(random.nextBoolean() ? Approval.Status.APPROVED : Approval.Status.REJECTED,
+                                decider(random), a.requestedAt().plusSeconds(1 + random.nextInt(86_400)));
+                    }
+                    history.add(a);
+                    newest.merge(action.order(), a, (x, y) -> y.requestedAt().isAfter(x.requestedAt()) ? y : x);
+                }
+                if (random.nextBoolean()) {
+                    history.add(Approval.pending(randomApprovalId(), id,
+                            "#" + action.order() + random.nextInt(10) + " ROLLBACK: decoy", T0.plusSeconds(900))
+                            .decided(Approval.Status.APPROVED, "decoy-user", T0.plusSeconds(960)));
+                }
+            }
+            // Written in random order through the repository's real request and decision methods.
+            Collections.shuffle(history, new Random(random.nextLong()));
+            for (Approval a : history) {
+                approvals.save(Approval.pending(a.id(), id, a.action(), a.requestedAt()));
+                if (a.status() != Approval.Status.PENDING) {
+                    assertThat(approvals.decide(a.id(), a.status(), a.decidedBy(), a.decidedAt())).isTrue();
+                }
+            }
+            reports.saveIfAbsent(report);
+            investigation(id, InvestigationStatus.COMPLETED);
+
+            String page = page(id);
+            int start = page.indexOf("id=\"actions\"");
+            int end = page.indexOf("id=\"open-questions\"");
+            assertThat(start).as("actions section").isNotNegative();
+            assertThat(end).as("open questions after actions").isGreaterThan(start);
+            String[] items = page.substring(start, end).split("class=\"action\"", -1);
+            assertThat(items).as("one list item per action").hasSize(actions.size() + 1);
+
+            for (RecommendedAction action : actions) {
+                String item = items[action.order()];
+                int order = action.order();
+                if (!action.requiresApproval()) {
+                    assertThat(item).as("action %d (%s) has no approval state", order, action.type())
+                            .doesNotContain("approval-state", "badge-status-", "decided by");
+                    continue;
+                }
+                Approval match = newest.get(order);
+                String state = match == null ? "PENDING" : match.status().name();
+                assertThat(occurrences(item, "class=\"badge badge-status-")).as("action %d one badge", order)
+                        .isEqualTo(1);
+                assertThat(item).as("action %d state", order)
+                        .contains("class=\"approval-state\"")
+                        .contains("<span class=\"badge badge-status-" + state + "\">" + state + "</span>")
+                        .doesNotContain("decoy-user");
+                if (match != null && match.status() != Approval.Status.PENDING) {
+                    assertThat(item).as("action %d decider and time", order)
+                            .contains("decided by <span class=\"decided-by\">" + match.decidedBy() + "</span>")
+                            .contains(" at <span class=\"decided-at\">" + renderer.times().dateTime(match.decidedAt())
+                                    + "</span>");
+                } else {
+                    assertThat(item).as("action %d undecided", order)
+                            .doesNotContain("decided by", "class=\"decided-by\"", "class=\"decided-at\"");
+                }
+            }
+        });
+    }
+
+    /** A generated decider name of lowercase letters, digits, dots and hyphens (no HTML-special text). */
+    private static String decider(SplittableRandom random) {
+        String alphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-";
+        StringBuilder name = new StringBuilder("u");
+        for (int i = random.nextInt(12); i >= 0; i--) {
+            name.append(alphabet.charAt(random.nextInt(alphabet.length())));
+        }
+        return name.toString();
+    }
+
+    private static String randomApprovalId() {
+        byte[] bytes = new byte[6];
+        ThreadLocalRandom.current().nextBytes(bytes);
+        return "apr-" + HexFormat.of().formatHex(bytes);
     }
 
     /**
