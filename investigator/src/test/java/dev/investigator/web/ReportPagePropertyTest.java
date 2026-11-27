@@ -20,6 +20,8 @@ import dev.investigator.domain.InvestigationStatus;
 import dev.investigator.domain.RecommendedAction;
 import dev.investigator.domain.Severity;
 import dev.investigator.domain.TimelineEntry;
+import dev.investigator.feedback.Feedback;
+import dev.investigator.feedback.FeedbackService;
 import dev.investigator.report.ActionPolicy;
 import dev.investigator.report.Approval;
 import dev.investigator.report.ApprovalRepository;
@@ -36,6 +38,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.SplittableRandom;
@@ -48,6 +51,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.util.HtmlUtils;
 
 /**
  * Properties of the Report_Page ({@code GET /incidents/{id}}).
@@ -73,6 +77,12 @@ import org.springframework.test.web.servlet.MockMvc;
  * {@code APPROVED} or {@code REJECTED}, and {@code PENDING} when no Approval exists for it.
  * <b>Validates: Requirements 7.2, 7.3, 7.4</b>
  *
+ * <p>Property 9: for any sequence of 0 to 6 feedback submissions (random rating, note with blanks and HTML
+ * metacharacters, submitter) on a {@code COMPLETED} report, the page lists them newest first, that is in
+ * reverse submission order, each with its rating, its stripped note HTML-escaped (none when blank) and its
+ * time in the Display_Timezone, or {@code No feedback yet.} when there are none.
+ * <b>Validates: Requirements 8.3</b>
+ *
  * <p>All seeds share the Spring context of the other {@code @InvestigatorSpringBootTest} MockMvc tests and
  * store their data under fresh random incident ids, so seeds and property methods never collide. Data is
  * written straight to the stores (no investigation is started), so no Scripted_Chat_Model calls happen.
@@ -97,6 +107,12 @@ class ReportPagePropertyTest {
     /** Action types that require approval under the ActionPolicy. */
     private static final ActionType[] APPROVABLE = {ActionType.ROLLBACK, ActionType.RESTART,
             ActionType.TRAFFIC_SHIFT, ActionType.CONFIG_CHANGE};
+    /** The text of a recorded feedback note on the page. */
+    private static final Pattern FEEDBACK_NOTE = Pattern.compile("<span class=\"feedback-note\">([^<]*)</span>");
+    /** Feedback note fragments, including blanks, padding and HTML metacharacters. */
+    private static final String[] NOTE_FRAGMENTS = {"", "   ", " padded ", "<script>alert('x')</script>",
+            "\"><img src=x onerror=alert(1)>", "a & b", "it's \"quoted\"", "<b>bold</b>", "&amp;&lt;",
+            "caf\u00e9 <\u00e9>", "rollback helped"};
 
     @Autowired
     private MockMvc mvc;
@@ -110,6 +126,8 @@ class ReportPagePropertyTest {
     private ApprovalRepository approvals;
     @Autowired
     private ReportRenderer renderer;
+    @Autowired
+    private FeedbackService feedbackService;
 
     @ParameterizedTest(name = "seed={0}")
     @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
@@ -324,6 +342,86 @@ class ReportPagePropertyTest {
                 }
             }
         });
+    }
+
+    // Feature: investigator-web-ui, Property 9: Recorded feedback is listed newest first
+    @ParameterizedTest(name = "seed={0}")
+    @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
+    void recordedFeedbackIsListedNewestFirst(long seed) {
+        PropertySeeds.check(seed, random -> {
+            String id = storedIncident(random);
+            InvestigationReport base = report(id, random);
+            reports.saveIfAbsent(new InvestigationReport(id, InvestigationStatus.COMPLETED, base.summary(),
+                    base.timeline(), base.hypotheses(), base.actions(), base.openQuestions(),
+                    base.evidence(), base.generatedAt()));
+            investigation(id, InvestigationStatus.COMPLETED);
+
+            // Submitted through the real Feedback_Service, oldest first; the page must show them reversed.
+            List<Feedback> submitted = new ArrayList<>();
+            List<String> expectedNotes = new ArrayList<>();
+            for (int i = random.nextInt(7); i > 0; i--) {
+                Feedback.Rating rating = random.nextBoolean() ? Feedback.Rating.HELPFUL : Feedback.Rating.UNHELPFUL;
+                String note = feedbackNote(random);
+                Feedback stored = feedbackService.submit(id, rating, note, submitter(random)).orElseThrow();
+                submitted.add(stored);
+                expectedNotes.add(note.isBlank() ? null : note.strip());
+            }
+
+            String page = page(id);
+            int start = page.indexOf("<section id=\"feedback\"");
+            assertThat(start).as("feedback section").isNotNegative();
+            String section = page.substring(start, page.indexOf("</section>", start));
+            if (submitted.isEmpty()) {
+                assertThat(section).as("no feedback").contains("No feedback yet.").doesNotContain("feedback-entry");
+                return;
+            }
+            assertThat(section).as("feedback list").doesNotContain("No feedback yet.");
+            String[] items = section.split("class=\"feedback-entry\"", -1);
+            assertThat(items).as("one list item per feedback").hasSize(submitted.size() + 1);
+
+            for (int shown = 0; shown < submitted.size(); shown++) {
+                int index = submitted.size() - 1 - shown;
+                Feedback f = submitted.get(index);
+                String item = items[shown + 1];
+                String rating = f.rating().name().toLowerCase(Locale.ROOT);
+                assertThat(item).as("entry %d is submission %d: rating", shown + 1, index + 1)
+                        .contains("<span class=\"feedback-rating feedback-" + rating + "\">" + rating + "</span>");
+                assertThat(item).as("entry %d is submission %d: time", shown + 1, index + 1)
+                        .contains("<span class=\"ev feedback-time\">" + renderer.times().dateTime(f.createdAt())
+                                + "</span>");
+                Matcher note = FEEDBACK_NOTE.matcher(item);
+                String expected = expectedNotes.get(index);
+                if (expected == null) {
+                    assertThat(note.find()).as("entry %d has no note", shown + 1).isFalse();
+                } else {
+                    assertThat(note.find()).as("entry %d note", shown + 1).isTrue();
+                    String raw = note.group(1);
+                    assertThat(raw).as("entry %d note escaped", shown + 1).doesNotContain("<", ">");
+                    assertThat(HtmlUtils.htmlUnescape(raw)).as("entry %d is submission %d: note", shown + 1, index + 1)
+                            .isEqualTo(expected);
+                    assertThat(note.find()).as("entry %d one note", shown + 1).isFalse();
+                }
+            }
+        });
+    }
+
+    /** A note of 0 to 3 fragments: plain words, padding, blanks and HTML metacharacters. */
+    private static String feedbackNote(SplittableRandom random) {
+        StringBuilder note = new StringBuilder();
+        for (int k = random.nextInt(4); k > 0; k--) {
+            note.append(random.nextBoolean() ? pick(random, NOTE_FRAGMENTS) : decider(random));
+        }
+        return note.toString();
+    }
+
+    /** No submitter, a blank one, a generated name or HTML text; the page does not show it. */
+    private static String submitter(SplittableRandom random) {
+        return switch (random.nextInt(4)) {
+            case 0 -> null;
+            case 1 -> "  ";
+            case 2 -> decider(random);
+            default -> "<b>" + decider(random) + "</b> & co";
+        };
     }
 
     /** A generated decider name of lowercase letters, digits, dots and hyphens (no HTML-special text). */
