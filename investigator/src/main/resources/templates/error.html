@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<!--/*
+  Dark HTML error page (Req 4.7). Used by Spring Boot's error view and by IncidentPageController for
+  404s. Shows only the escaped status code and reason phrase: no message, path, trace or exception.
+*/-->
+<head th:replace="~{fragments/layout :: head(${'Error ' + status})}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header}"></header>
+<main class="error-page">
+  <p class="error-status" th:text="${status}">404</p>
+  <p class="error-reason" th:text="${error}">Not Found</p>
+  <p><a href="/incidents" th:href="@{/incidents}">Back to incidents</a></p>
+</main>
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>

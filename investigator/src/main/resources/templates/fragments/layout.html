@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<!--/*
+  Shared console shell (Req 1.1, 1.2, 1.5). Pages use:
+    <head th:replace="~{fragments/layout :: head(${title})}"></head>
+    <header th:replace="~{fragments/layout :: header}"></header>
+    <footer th:replace="~{fragments/layout :: footer}"></footer>
+  CSS and JS come only from this application's static path; no external host.
+*/-->
+<head th:fragment="head(title)">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title th:text="${title}">Investigator</title>
+  <link rel="stylesheet" href="/css/console.css" th:href="@{/css/console.css}">
+  <script src="/js/console.js" th:src="@{/js/console.js}" defer></script>
+</head>
+<body>
+
+<header th:fragment="header" class="console-header">
+  <a class="brand" href="/incidents" th:href="@{/incidents}">Investigator</a>
+  <nav class="console-nav">
+    <a href="/incidents" th:href="@{/incidents}">Incidents</a>
+    <a href="/incidents/new" th:href="@{/incidents/new}">New alert</a>
+  </nav>
+</header>
+
+<footer th:fragment="footer" class="console-footer">
+  <span th:if="${zone != null}">Times in <span class="zone" th:text="${zone}">Asia/Kolkata</span></span>
+</footer>
+
+</body>
+</html>

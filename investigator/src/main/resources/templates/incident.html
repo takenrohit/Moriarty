@@ -1,35 +1,24 @@
 <!DOCTYPE html>
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
-<head>
-  <meta charset="UTF-8">
-  <title th:text="${incident.title}">Incident</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; max-width: 60rem; }
-    .muted { color: #666; }
-    .ev { font-family: ui-monospace, monospace; font-size: 0.9em; color: #555; }
-    .correlation { font-style: italic; }
-    .approval { color: #a40000; font-weight: bold; }
-    dl { display: grid; grid-template-columns: max-content auto; gap: 0.2rem 1rem; }
-    dt { font-weight: bold; }
-    dd { margin: 0; }
-  </style>
-</head>
+<head th:replace="~{fragments/layout :: head(${incident.title})}"></head>
 <body>
+<header th:replace="~{fragments/layout :: header}"></header>
+<main>
 <p><a th:href="@{/incidents}">All incidents</a></p>
 
 <h1 th:text="'Incident Investigation — ' + ${incident.service}">Incident Investigation</h1>
 
-<dl>
-  <dt>Incident</dt><dd th:text="${incident.id}">inc-000000000000</dd>
+<dl class="fields">
+  <dt>Incident</dt><dd class="ev" th:text="${incident.id}">inc-000000000000</dd>
   <dt>Alert</dt><dd th:text="${incident.title}">HighErrorRate on checkout-api</dd>
-  <dt>Severity</dt><dd th:text="${incident.severity}">Critical</dd>
+  <dt>Severity</dt><dd><span th:replace="~{fragments/badges :: severity(${incident.severity})}">Critical</span></dd>
   <dt>Detected</dt><dd th:text="${incident.detected}">2026-11-23 20:10 IST</dd>
-  <dt>Status</dt><dd th:text="${incident.investigationStatus}">COMPLETED</dd>
+  <dt>Status</dt><dd><span th:replace="~{fragments/badges :: status(${incident.investigationStatus})}">COMPLETED</span></dd>
 </dl>
 
 <p th:if="${report == null}">
   The report is not ready yet. Investigation status:
-  <strong th:text="${incident.investigationStatus}">RUNNING</strong>.
+  <span th:replace="~{fragments/badges :: status(${incident.investigationStatus})}">RUNNING</span>.
 </p>
 
 <th:block th:if="${report != null}">
@@ -41,7 +30,7 @@
   <ol th:unless="${#lists.isEmpty(report.hypotheses)}">
     <li th:each="h : ${report.hypotheses}">
       <span th:text="${h.statement}">Statement</span>
-      <span th:text="'(confidence: ' + ${h.confidence} + ')'">(confidence: HIGH)</span>
+      <span class="muted" th:text="'(confidence: ' + ${h.confidence} + ')'">(confidence: HIGH)</span>
       <span class="ev" th:each="ev : ${h.supportingEvidenceIds}" th:text="'[' + ${ev} + ']'">[ev]</span>
       <div th:unless="${#lists.isEmpty(h.contradictingEvidenceIds)}">Contradicting:
         <span class="ev" th:each="ev : ${h.contradictingEvidenceIds}" th:text="'[' + ${ev} + ']'">[ev]</span>
@@ -53,13 +42,15 @@
   <h2 th:text="${report.timelineHeading}">Timeline (IST)</h2>
   <p th:if="${#lists.isEmpty(report.timeline)}">None.</p>
   <table th:unless="${#lists.isEmpty(report.timeline)}">
+    <tbody>
     <tr th:each="e : ${report.timeline}">
-      <td th:text="${e.time}">20:10</td>
+      <td class="ev" th:text="${e.time}">20:10</td>
       <td>
         <span th:text="${e.description}">Description</span>
         <span class="ev" th:each="ev : ${e.evidenceIds}" th:text="'[' + ${ev} + ']'">[ev]</span>
       </td>
     </tr>
+    </tbody>
   </table>
 
   <h2>Recommended next steps</h2>
@@ -81,19 +72,23 @@
   <h2>Evidence</h2>
   <p th:if="${#lists.isEmpty(report.evidence)}">None.</p>
   <table th:unless="${#lists.isEmpty(report.evidence)}">
+    <tbody>
     <tr th:each="e : ${report.evidence}">
       <td class="ev" th:text="${e.id}">ev</td>
       <td th:text="${e.type}">ALERT</td>
       <td th:text="${e.source}">alert-intake</td>
-      <td th:text="${e.observedAt}">20:10</td>
+      <td class="ev" th:text="${e.observedAt}">20:10</td>
       <td>
         <div th:text="${e.headline}">Headline</div>
         <div class="muted" th:text="${e.citation}">Citation</div>
       </td>
     </tr>
+    </tbody>
   </table>
 
   <p class="muted" th:text="'Generated ' + ${report.generated}">Generated</p>
 </th:block>
+</main>
+<footer th:replace="~{fragments/layout :: footer}"></footer>
 </body>
 </html>

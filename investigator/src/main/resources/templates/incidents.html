@@ -1,18 +1,11 @@
 <!DOCTYPE html>
 <html lang="en" xmlns:th="http://www.thymeleaf.org">
-<head>
-  <meta charset="UTF-8">
-  <title>Incidents</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; }
-    .muted { color: #666; }
-  </style>
-</head>
+<head th:replace="~{fragments/layout :: head('Incidents')}"></head>
 <body>
+<header th:replace="~{fragments/layout :: header}"></header>
+<main>
 <h1>Incidents</h1>
-<p class="muted">Times in <span th:text="${zone}">Asia/Kolkata</span>. Newest first.</p>
+<p class="muted">Newest first.</p>
 
 <p th:if="${#lists.isEmpty(incidents)}">No incidents yet.</p>
 
@@ -31,13 +24,15 @@
   <tr th:each="i : ${incidents}">
     <td th:text="${i.detected}">2026-11-23 20:10 IST</td>
     <td><a th:href="@{/incidents/{id}(id=${i.id})}" th:text="${i.title}">HighErrorRate on checkout-api</a>
-      <div class="muted" th:text="${i.id}">inc-000000000000</div></td>
+      <div class="muted ev" th:text="${i.id}">inc-000000000000</div></td>
     <td th:text="${i.service}">checkout-api</td>
-    <td th:text="${i.severity}">Critical</td>
+    <td><span th:replace="~{fragments/badges :: severity(${i.severity})}">Critical</span></td>
     <td th:text="${i.incidentStatus}">REPORTED</td>
-    <td th:text="${i.investigationStatus}">COMPLETED</td>
+    <td><span th:replace="~{fragments/badges :: status(${i.investigationStatus})}">COMPLETED</span></td>
   </tr>
   </tbody>
 </table>
+</main>
+<footer th:replace="~{fragments/layout :: footer}"></footer>
 </body>
 </html>

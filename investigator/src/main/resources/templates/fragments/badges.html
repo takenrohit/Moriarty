@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<!--/*
+  Status_Badge and Severity_Badge (Req 1.3, 1.4). The class carries the colour; the value is always
+  printed as escaped text, so an unexpected value still reads without colour. Usage:
+    <span th:replace="~{fragments/badges :: status(${incident.investigationStatus})}"></span>
+    <span th:replace="~{fragments/badges :: severity(${incident.severity})}"></span>
+*/-->
+<body>
+<span th:fragment="status(value)" class="badge" th:classappend="${'badge-status-' + value}"
+      th:text="${value}">COMPLETED</span>
+<span th:fragment="severity(value)" class="badge" th:classappend="${'badge-severity-' + value}"
+      th:text="${value}">Critical</span>
+</body>
+</html>
