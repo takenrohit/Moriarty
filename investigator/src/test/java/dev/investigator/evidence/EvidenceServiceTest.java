@@ -11,6 +11,8 @@ import dev.investigator.domain.EvidenceType;
 import dev.investigator.domain.Incident;
 import dev.investigator.domain.IncidentStatus;
 import dev.investigator.domain.Severity;
+import dev.investigator.integration.logs.LogEntry;
+import dev.investigator.integration.logs.LogSearchResult;
 import dev.investigator.integration.metrics.MetricSeries;
 import dev.investigator.integration.mock.MockScenario;
 import dev.investigator.investigation.InvestigationContext;
@@ -105,6 +107,26 @@ class EvidenceServiceTest {
         assertThat(stored.redactionStatus()).isEqualTo(RedactionResult.NOT_APPLIED);
         assertThat(next.id()).isEqualTo("ev-" + incident.id() + "-2");
         assertThat(repository.findByIncident(incident.id())).hasSize(2);
+    }
+
+    @Test
+    void headlineIsRedactedLikeThePayload() {
+        Incident incident = incident();
+        evidenceService.storeAlert(incident, "0".repeat(32));
+        String line = "Checkout failed (card 4111 1111 1111 1111, Authorization: Bearer demo-fake-token)";
+        LogSearchResult result = new LogSearchResult(List.of(new LogEntry(A, "ERROR", line)), false);
+
+        StoredEvidence stored = evidenceService.store(context(incident), EvidenceType.LOG, "loki", A, "q",
+                id -> new LogSummarizer(5).summarize(id, "checkout-api", "q", A.minus(Duration.ofMinutes(60)),
+                        A, false, result));
+
+        Evidence log = stored.evidence();
+        assertThat(log.headline())
+                .contains("[REDACTED:card]", "[REDACTED:bearer_token]")
+                .doesNotContain("4111", "demo-fake-token");
+        assertThat(log.summary()).doesNotContain("4111", "demo-fake-token");
+        assertThat(log.redactions()).containsExactlyInAnyOrder("card", "bearer_token");
+        assertThat(stored.redactionStatus()).isEqualTo(RedactionResult.APPLIED);
     }
 
     private static Incident incident() {

@@ -11,8 +11,11 @@ import dev.investigator.investigation.InvestigationContext;
 import dev.investigator.store.EvidenceRepository;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -38,6 +41,7 @@ import org.springframework.stereotype.Component;
 public class EvidenceService {
 
     static final String ALERT_SOURCE = "alert-intake";
+    private static final String HEADLINE_KEY = "headline";
 
     private static final Logger log = LoggerFactory.getLogger(EvidenceService.class);
     private static final TypeReference<LinkedHashMap<String, Object>> MAP_TYPE = new TypeReference<>() {
@@ -117,8 +121,16 @@ public class EvidenceService {
             }
             LinkedHashMap<String, Object> payload = mapper.convertValue(summary, MAP_TYPE);
             redaction = Objects.requireNonNull(redactor.redact(payload), "redaction result");
+            // The headline is not in the payload but is shown in reports and Slack, so it is redacted too.
+            String headline = summary.headline();
+            if (headline != null) {
+                RedactionResult headlineRedaction = Objects.requireNonNull(
+                        redactor.redact(Map.of(HEADLINE_KEY, headline)), "headline redaction result");
+                headline = (String) headlineRedaction.payload().get(HEADLINE_KEY);
+                redaction = merge(redaction, headlineRedaction);
+            }
             String capped = ResultCapper.cap(mapper, redaction.payload(), id, maxResultBytes);
-            evidence = new Evidence(id, incidentId, type, source, observedAt, capped, summary.headline(),
+            evidence = new Evidence(id, incidentId, type, source, observedAt, capped, headline,
                     redaction.payload(), citation, redaction.categories());
             repository.save(evidence);
             sequence.last.set(n);
@@ -128,6 +140,16 @@ public class EvidenceService {
         log.debug("evidence stored evidence_id={} type={} source={} redaction_status={} trace_id={}",
                 evidence.id(), type, source, redaction.status(), traceId);
         return new StoredEvidence(evidence, redaction.status());
+    }
+
+    /** The payload redaction with the headline's categories added; applied if either redacted something. */
+    private static RedactionResult merge(RedactionResult payload, RedactionResult headline) {
+        if (headline.categories().isEmpty()) {
+            return payload;
+        }
+        Set<String> categories = new LinkedHashSet<>(payload.categories());
+        categories.addAll(headline.categories());
+        return new RedactionResult(payload.payload(), categories, RedactionResult.APPLIED);
     }
 
     /** Last assigned number for one incident, guarded by {@link #lock} for writes. */
