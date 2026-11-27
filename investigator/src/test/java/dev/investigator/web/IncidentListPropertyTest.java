@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import dev.investigator.alert.AlertIntakeService;
+import dev.investigator.config.WebhookProperties;
 import dev.investigator.domain.Incident;
 import dev.investigator.domain.IncidentStatus;
 import dev.investigator.domain.Severity;
@@ -14,7 +16,9 @@ import dev.investigator.store.InMemoryInvestigationRepository;
 import dev.investigator.store.InMemoryReportRepository;
 import dev.investigator.testsupport.InvestigatorSpringBootTest;
 import dev.investigator.testsupport.PropertySeeds;
+import jakarta.validation.Validator;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -55,6 +59,14 @@ class IncidentListPropertyTest {
     private ReportRenderer renderer;
     @Autowired
     private ThymeleafViewResolver viewResolver;
+    @Autowired
+    private AlertIntakeService intake;
+    @Autowired
+    private WebhookProperties webhook;
+    @Autowired
+    private Validator validator;
+    @Autowired
+    private Clock clock;
 
     @ParameterizedTest(name = "seed={0}")
     @MethodSource("dev.investigator.testsupport.PropertySeeds#seeds")
@@ -67,7 +79,8 @@ class IncidentListPropertyTest {
             List<String> expected = store.findAllNewestFirst().stream().map(Incident::id).toList();
 
             MockMvc mvc = MockMvcBuilders.standaloneSetup(new IncidentPageController(store,
-                    new InMemoryInvestigationRepository(), new InMemoryReportRepository(), renderer))
+                    new InMemoryInvestigationRepository(), new InMemoryReportRepository(), renderer, intake, webhook,
+                    validator, clock))
                     // Delegate so the standalone builder does not re-bind the shared resolver to its stub context.
                     .setViewResolvers((ViewResolver) viewResolver::resolveViewName)
                     .build();

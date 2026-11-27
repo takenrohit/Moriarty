@@ -43,10 +43,71 @@
       });
   }
 
+  function pad2(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  // The current time as ISO-8601 with offset, seconds precision, in the IANA zone `zone` (the
+  // Display_Timezone), for example 2026-11-23T20:10:00+05:30. Falls back to the browser's zone.
+  function nowIso(zone) {
+    var now = new Date(Math.floor(Date.now() / 1000) * 1000);
+    var y, mo, d, h, mi, s, offsetMinutes;
+    try {
+      var parts = {};
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      }).formatToParts(now).forEach(function (p) { parts[p.type] = p.value; });
+      y = +parts.year; mo = +parts.month; d = +parts.day;
+      h = +parts.hour % 24; mi = +parts.minute; s = +parts.second;
+      offsetMinutes = Math.round((Date.UTC(y, mo - 1, d, h, mi, s) - now.getTime()) / 60000);
+    } catch (e) {
+      y = now.getFullYear(); mo = now.getMonth() + 1; d = now.getDate();
+      h = now.getHours(); mi = now.getMinutes(); s = now.getSeconds();
+      offsetMinutes = -now.getTimezoneOffset();
+    }
+    var offset = 'Z';
+    if (offsetMinutes !== 0) {
+      var abs = Math.abs(offsetMinutes);
+      offset = (offsetMinutes < 0 ? '-' : '+') + pad2(Math.floor(abs / 60)) + ':' + pad2(abs % 60);
+    }
+    return y + '-' + pad2(mo) + '-' + pad2(d) + 'T' + pad2(h) + ':' + pad2(mi) + ':' + pad2(s) + offset;
+  }
+
+  // New-alert page: choosing a scenario preset fills the editable fields from the option's data-*
+  // attributes and sets the detected time to now (Req 3.2, 3.3). Only input values are written.
+  function startPresetSelect(form) {
+    var select = form.querySelector('[data-preset-select]');
+    if (!select) {
+      return;
+    }
+    select.addEventListener('change', function () {
+      var option = select.options[select.selectedIndex];
+      if (!option) {
+        return;
+      }
+      ['alert', 'service', 'severity'].forEach(function (name) {
+        var input = form.elements.namedItem(name);
+        var value = option.dataset[name];
+        if (input && typeof value === 'string') {
+          input.value = value;
+        }
+      });
+      var detectedAt = form.elements.namedItem('detectedAt');
+      if (detectedAt) {
+        detectedAt.value = nowIso(form.dataset.zone);
+      }
+    });
+  }
+
   function start() {
     // Only the list page carries the data-live-list marker.
     if (document.querySelector('[data-live-list]')) {
       setTimeout(refreshList, LIST_REFRESH_MS);
+    }
+    var newAlertForm = document.querySelector('form[data-new-alert]');
+    if (newAlertForm) {
+      startPresetSelect(newAlertForm);
     }
   }
 

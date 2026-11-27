@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments/layout :: head('New alert')}"></head>
+<body>
+<header th:replace="~{fragments/layout :: header}"></header>
+<main>
+<h1>New alert</h1>
+
+<!--/* Webhook_Secret configured: no form fields at all, only the notice (Req 3.8). */-->
+<p th:unless="${formEnabled}" id="form-disabled" class="notice" role="status"
+   th:text="${disabledMessage}">Browser alert creation is disabled.</p>
+
+<th:block th:if="${formEnabled}">
+<p class="muted">Pick a scenario preset, adjust any field, then raise the alert. It goes through the same
+  intake and validation as <code>POST /api/v1/alerts</code>.</p>
+
+<!--/* Preset links work without JavaScript (Req 3.2, 3.7). */-->
+<nav class="preset-links" aria-label="Scenario presets">
+  <a th:each="p : ${presets}" class="preset-link" href="/incidents/new"
+     th:href="@{/incidents/new(scenario=${p.key})}" th:text="${p.label}">Preset</a>
+</nav>
+
+<p th:if="${message != null}" id="form-message" class="form-message" role="alert" th:text="${message}">Message</p>
+
+<div th:unless="${errors.isEmpty()}" id="form-errors" class="form-errors" role="alert">
+  <p>The alert was not created. Fix these fields:</p>
+  <ul>
+    <th:block th:each="entry : ${errors}">
+      <li th:each="m : ${entry.value}"><span class="ev" th:text="${entry.key}">field</span>: <span th:text="${m}">message</span></li>
+    </th:block>
+  </ul>
+</div>
+
+<!--/* Plain POST form: same outcomes with or without JavaScript (Req 3.7). */-->
+<form id="new-alert-form" class="alert-form" method="post" action="/incidents" th:action="@{/incidents}"
+      data-new-alert th:data-zone="${zone}">
+  <div class="field">
+    <label for="scenario">Scenario</label>
+    <select id="scenario" name="scenario" data-preset-select>
+      <option th:each="p : ${presets}" th:value="${p.key}" th:text="${p.key + ' - ' + p.label}"
+              th:selected="${p.key == selectedPreset}"
+              th:data-alert="${p.alert}" th:data-service="${p.service}" th:data-severity="${p.severity}">preset</option>
+    </select>
+    <span class="field-error" th:each="m : ${errors['scenario']}" th:text="${m}">error</span>
+  </div>
+  <div class="field">
+    <label for="alert">Alert name</label>
+    <input id="alert" name="alert" type="text" th:value="${form.alert}">
+    <span class="field-error" th:each="m : ${errors['alert']}" th:text="${m}">error</span>
+  </div>
+  <div class="field">
+    <label for="service">Service</label>
+    <input id="service" name="service" type="text" th:value="${form.service}">
+    <span class="field-error" th:each="m : ${errors['service']}" th:text="${m}">error</span>
+  </div>
+  <div class="field">
+    <label for="severity">Severity</label>
+    <input id="severity" name="severity" type="text" list="severities" th:value="${form.severity}">
+    <datalist id="severities">
+      <option value="critical"></option>
+      <option value="high"></option>
+      <option value="warning"></option>
+      <option value="info"></option>
+    </datalist>
+    <span class="field-error" th:each="m : ${errors['severity']}" th:text="${m}">error</span>
+  </div>
+  <div class="field">
+    <!--/* Text, not datetime-local: the normalizer needs an ISO-8601 offset. */-->
+    <label for="detectedAt">Detected at</label>
+    <input id="detectedAt" name="detectedAt" type="text" th:value="${form.detectedAt}">
+    <span class="muted hint">ISO-8601 with offset, for example 2026-11-23T20:10:00+05:30</span>
+    <span class="field-error" th:each="m : ${errors['detectedAt']}" th:text="${m}">error</span>
+  </div>
+  <div class="field">
+    <button type="submit">Raise alert</button>
+  </div>
+</form>
+</th:block>
+</main>
+<footer th:replace="~{fragments/layout :: footer}"></footer>
+</body>
+</html>
