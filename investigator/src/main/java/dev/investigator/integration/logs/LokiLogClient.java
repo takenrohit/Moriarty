@@ -53,8 +53,9 @@ public class LokiLogClient implements LogClient {
 
     /** Hint returned to the model when its LogQL cannot be used (constant text, never the query). */
     public static final String LOGQL_HINT = "pass LogQL line filters such as |= \"timeout\" or"
-            + " {service=\"checkout-api\"} |= \"timeout\"; the service selector is set from the service argument"
-            + " and metric queries such as count_over_time(...) are not supported";
+            + " {service=\"checkout-api\"} |= \"timeout\"; the operators are |= != |~ !~ (there is no |!=), each"
+            + " followed by a double-quoted string, e.g. |~ \"(?i)timeout\" != \"DEBUG\"; the service selector is set"
+            + " from the service argument and metric queries such as count_over_time(...) are not supported";
 
     /** Stream labels (or structured metadata) holding the level, in order of preference. */
     private static final List<String> LEVEL_LABELS = List.of("detected_level", "severity_text", "level");
