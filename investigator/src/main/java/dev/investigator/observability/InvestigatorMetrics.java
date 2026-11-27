@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import org.springframework.stereotype.Component;
 
@@ -12,6 +13,10 @@ import org.springframework.stereotype.Component;
  * The investigator's own meters from architecture §8 (Req 2, CP-70), exposed at
  * {@code /actuator/prometheus} and scraped by Prometheus. Tag values are bounded: statuses, tool and
  * model names, {@code input}/{@code output}, and the {@code validation_status} values below.
+ *
+ * <p>The constructor registers every known tag combination at zero. A series that first appears with
+ * value 1 shows no increase to {@code rate()}, so without this the dashboards stayed at 0 for the first
+ * investigation, tool call or report after a restart.
  */
 @Component
 public class InvestigatorMetrics {
@@ -33,30 +38,39 @@ public class InvestigatorMetrics {
     public static final String INPUT = "input";
     public static final String OUTPUT = "output";
 
+    /** The model's tools (the {@code @Tool} methods of {@code ObservabilityTools}), registered at zero. */
+    public static final List<String> TOOLS =
+            List.of("getMetric", "searchLogs", "findProblemTraces", "getRecentChanges", "findRunbook");
+    /** Tool call outcomes, registered at zero. */
+    public static final List<String> TOOL_STATUSES = List.of("success", "rejected", "error");
+
+    private static final List<InvestigationStatus> TERMINAL_STATUSES =
+            List.of(InvestigationStatus.COMPLETED, InvestigationStatus.INCONCLUSIVE, InvestigationStatus.FAILED);
     private static final String UNKNOWN = "unknown";
 
     private final MeterRegistry registry;
 
     public InvestigatorMetrics(MeterRegistry registry) {
         this.registry = Objects.requireNonNull(registry, "registry");
+        TERMINAL_STATUSES.forEach(status -> investigationTimer(status.name()));
+        for (String tool : TOOLS) {
+            TOOL_STATUSES.forEach(status -> toolCalls(tool, status));
+            toolLatency(tool);
+        }
+        List.of(REPORT_VALID, REPORT_CORRECTED, REPORT_FALLBACK).forEach(this::reports);
+        approvalWaitTimer();
     }
 
     /** An investigation reached a terminal status (Req 2.1). */
     public void investigationFinished(InvestigationStatus status, Duration duration) {
-        Timer.builder(INVESTIGATION_DURATION).description("Investigation run time by terminal status")
-                .tag("status", status == null ? UNKNOWN : status.name())
-                .register(registry).record(duration);
+        investigationTimer(status == null ? UNKNOWN : status.name()).record(duration);
     }
 
     /** A tool call finished with {@code status} {@code success}, {@code rejected} or {@code error} (Req 2.2). */
     public void toolCallFinished(String tool, String status, Duration duration) {
         String name = orUnknown(tool);
-        Counter.builder(TOOL_CALLS).description("Tool calls by tool and outcome")
-                .tag("tool", name).tag("status", orUnknown(status))
-                .register(registry).increment();
-        Timer.builder(TOOL_LATENCY).description("Tool call latency by tool")
-                .tag("tool", name)
-                .register(registry).record(duration);
+        toolCalls(name, orUnknown(status)).increment();
+        toolLatency(name).record(duration);
     }
 
     /** Token usage of one LLM response; null counts are skipped (Req 2.3). */
@@ -67,15 +81,41 @@ public class InvestigatorMetrics {
 
     /** A report was stored (Req 2.4). */
     public void reportGenerated(String validationStatus) {
-        Counter.builder(REPORT_GENERATED).description("Stored reports by validation outcome")
-                .tag("validation_status", orUnknown(validationStatus))
-                .register(registry).increment();
+        reports(orUnknown(validationStatus)).increment();
     }
 
     /** Time from an approval request to its decision (Req 2.5); called by the approval workflow. */
     public void approvalWait(Duration wait) {
-        Timer.builder(APPROVAL_WAIT).description("Approval request-to-decision time")
-                .register(registry).record(wait);
+        approvalWaitTimer().record(wait);
+    }
+
+    private Timer investigationTimer(String status) {
+        return Timer.builder(INVESTIGATION_DURATION).description("Investigation run time by terminal status")
+                .tag("status", status)
+                .register(registry);
+    }
+
+    private Counter toolCalls(String tool, String status) {
+        return Counter.builder(TOOL_CALLS).description("Tool calls by tool and outcome")
+                .tag("tool", tool).tag("status", status)
+                .register(registry);
+    }
+
+    private Timer toolLatency(String tool) {
+        return Timer.builder(TOOL_LATENCY).description("Tool call latency by tool")
+                .tag("tool", tool)
+                .register(registry);
+    }
+
+    private Counter reports(String validationStatus) {
+        return Counter.builder(REPORT_GENERATED).description("Stored reports by validation outcome")
+                .tag("validation_status", validationStatus)
+                .register(registry);
+    }
+
+    private Timer approvalWaitTimer() {
+        return Timer.builder(APPROVAL_WAIT).description("Approval request-to-decision time")
+                .register(registry);
     }
 
     private void tokens(String model, String direction, Integer count) {
