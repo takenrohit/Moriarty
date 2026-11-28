@@ -61,6 +61,30 @@ public final class DomainGenerators {
             "<script>alert('x')</script>",
             "{\"looks\":\"like json\"}",
             "null");
+    /**
+     * Markup and script injection payloads for the escaping property (web UI Property 10). Each one holds at
+     * least one HTML metacharacter ({@code < > & " '}) except the bare {@code javascript:} URL, which matters
+     * only when it would reach an {@code href}.
+     */
+    public static final List<String> HTML_PAYLOADS = List.of(
+            "<script>alert(1)</script>",
+            "\"><img src=x onerror=alert(1)>",
+            "'",
+            "' onmouseover='alert(1)",
+            "\" autofocus onfocus=\"alert(1)",
+            "&amp;",
+            "&lt;b&gt;not markup&lt;/b&gt;",
+            "javascript:alert(1)",
+            "</textarea><script>alert(1)</script>",
+            "<svg onload=alert(1)>",
+            "<iframe src=\"javascript:alert(1)\"></iframe>",
+            "<a href=\"javascript:alert(1)\">click</a>",
+            "<b>bold</b>",
+            "a & b < c > d",
+            "<!-- comment -->");
+    private static final List<String> PLAIN_WORDS = List.of(
+            "checkout", "error rate", "rollback", "v2.14.0", "p99", "caf\u00e9", "deploy", "5xx");
+
     /** Generated instants stay within years 0001 to 9999, the range of four-digit ISO-8601 years. */
     public static final Instant MIN_INSTANT = Instant.parse("0001-01-01T00:00:00Z");
     public static final Instant MAX_INSTANT = Instant.parse("9999-12-31T23:59:59.999999999Z");
@@ -278,6 +302,21 @@ public final class DomainGenerators {
             return special(r);
         }
         return repeat(r, r.nextInt(1, SHORT_TEXT + 1));
+    }
+
+    /**
+     * Untrusted text carrying HTML metacharacters: 1 to 4 parts, each one of {@link #HTML_PAYLOADS} or a plain
+     * word, joined by single spaces. At least one part is a payload; the result is never blank and has no
+     * leading or trailing whitespace, so stripping (as the feedback note is) leaves it unchanged.
+     */
+    public static String htmlPayloadText(SplittableRandom r) {
+        int parts = r.nextInt(1, 5);
+        int payloadAt = r.nextInt(parts);
+        List<String> chosen = new ArrayList<>(parts);
+        for (int i = 0; i < parts; i++) {
+            chosen.add(i == payloadAt || r.nextBoolean() ? pick(r, HTML_PAYLOADS) : pick(r, PLAIN_WORDS));
+        }
+        return String.join(" ", chosen);
     }
 
     // ---------------------------------------------------------------- helpers
